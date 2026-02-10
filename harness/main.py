@@ -33,6 +33,15 @@ SSHBOX_SCRIPT_PATH = Path('../sshbox_scripts')
 LITELLM_TRAJ_PATH = Path(os.getenv('LITELLM_TRAJ_DIR', '../play/trajs'))
 LITELLM_BASEURL_IN_DOCKER = 'http://litellm_app:4000'
 LITELLM_CONTROLLER_BASEURL = 'http://127.0.0.1:4001'
+ENABLE_LINKOS_MIRROR = os.getenv('ENABLE_LINKOS_MIRROR', '1') == '1'
+LINKOS_MIRROR_MAP = {
+    'docker.io': os.getenv('LINKOS_MIRROR_DOCKER', 'docker.linkos.org'),
+    'gcr.io': os.getenv('LINKOS_MIRROR_GCR', 'gcr.linkos.org'),
+    'ghcr.io': os.getenv('LINKOS_MIRROR_GHCR', 'ghcr.linkos.org'),
+    'quay.io': os.getenv('LINKOS_MIRROR_QUAY', 'quay.linkos.org'),
+    'registry.k8s.io': os.getenv('LINKOS_MIRROR_K8S', 'k8s.linkos.org'),
+    'k8s.gcr.io': os.getenv('LINKOS_MIRROR_K8S', 'k8s.linkos.org'),
+}
 
 ROOTFS_DEVICE = os.getenv('ROOTFS_DEVICE', '/dev/sda')
 DOCKER_LIMITS = {
@@ -137,6 +146,62 @@ class Workdir:
         self.cleanup()
         
 docker_client = docker.from_env()
+
+def _split_registry(image: str) -> tuple[str | None, str]:
+    first, sep, rest = image.partition('/')
+    if sep and ('.' in first or ':' in first or first == 'localhost'):
+        return first, rest
+    return None, image
+
+def _ensure_library_namespace(name_with_ref: str) -> str:
+    if '@' in name_with_ref:
+        repo, digest = name_with_ref.split('@', 1)
+        ref = f'@{digest}'
+    elif ':' in name_with_ref:
+        repo, maybe_tag = name_with_ref.rsplit(':', 1)
+        if '/' in maybe_tag:
+            repo = name_with_ref
+            ref = ''
+        else:
+            ref = f':{maybe_tag}'
+    else:
+        repo = name_with_ref
+        ref = ''
+
+    if '/' not in repo:
+        repo = f'library/{repo}'
+    return f'{repo}{ref}'
+
+def _to_linkos_mirror(image: str) -> str | None:
+    registry, rest = _split_registry(image)
+    source_registry = registry or 'docker.io'
+    mirror_registry = LINKOS_MIRROR_MAP.get(source_registry)
+    if not mirror_registry:
+        return None
+
+    if source_registry == 'docker.io':
+        rest = _ensure_library_namespace(rest)
+    return f'{mirror_registry}/{rest}'
+
+def pull_image_with_fallback(image: str):
+    print(f'pulling {image}')
+    mirror_image = _to_linkos_mirror(image) if ENABLE_LINKOS_MIRROR else None
+
+    if mirror_image:
+        try:
+            if VERBOSE >= 1:
+                print(f'{ts()} | trying mirror pull {mirror_image}')
+            docker_client.images.pull(mirror_image)
+            docker_client.images.get(mirror_image).tag(image)
+            if VERBOSE >= 1:
+                print(f'{ts()} | mirror pull succeeded: {mirror_image} -> {image}')
+            return
+        except Exception as mirror_err:
+            if VERBOSE >= 1:
+                print(f'{ts()} | mirror pull failed for {mirror_image}: {repr(mirror_err)}')
+                print(f'{ts()} | fallback to direct pull {image}')
+
+    docker_client.images.pull(image)
 
 def eval_single_project(instances: list[Instance], candidate: Candidate):
     assert len(instances) > 0
@@ -501,8 +566,7 @@ if __name__ == '__main__':
             try:
                 docker_client.images.get(image)
             except docker.errors.ImageNotFound:
-                print(f'pulling {image}')
-                docker_client.images.pull(image)
+                pull_image_with_fallback(image)
     
     san_check()
 

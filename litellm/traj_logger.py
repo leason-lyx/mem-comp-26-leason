@@ -1,7 +1,7 @@
 from litellm.integrations.custom_logger import CustomLogger
 from pathlib import Path
+from datetime import datetime
 import json
-import random
 import traceback
 
 class TrajLogger(CustomLogger):
@@ -20,7 +20,10 @@ class TrajLogger(CustomLogger):
             keyhash = log_obj['metadata']['user_api_key_hash']
             start_time = log_obj['startTime']
 
-            serial = f'{start_time*1000:.0f}_{random.randint(0, 1000000):06d}'
+            dt = datetime.fromtimestamp(start_time)
+            ms = int((start_time - int(start_time)) * 1000)
+            timestr = f"{dt.strftime('%Y%m%d_%H%M%S')}{ms:03d}"
+            serial = timestr
             out_path = self._traj_base_path / keyhash[:20] / f'{serial}.json'
             out_path.parent.mkdir(parents=True, exist_ok=True)
 

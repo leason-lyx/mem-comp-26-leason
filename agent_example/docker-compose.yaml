@@ -6,7 +6,7 @@ services:
     agent:
         restart: no
         build: .
-        image: minisweagent-withmem # the agent will be built with this image name
+        image: minisweagent-withmem-example # the agent will be built with this image name
         networks:
             - infra
         environment:
@@ -22,7 +22,7 @@ services:
             - --llm-base-url
             - http://litellm_app:4000
             - --llm-api-key
-            - sk-4XXJ6nJ1wEMc_ednjvFv6A
+            - sk-TK01d5GMPRZLT_Z7b_Pitg
             - --env-ssh
             - root:ssh_Passw0rd@sshbox
 
