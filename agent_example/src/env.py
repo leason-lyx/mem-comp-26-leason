@@ -63,8 +63,10 @@ class SshEnvironment:
             stdin, stdout, stderr = client.exec_command(command, timeout=timeout, environment=self.config.env)
             stdin.close()
 
-            output = stdout.read().decode('utf-8', errors='replace').strip()
-            output_stderr = stderr.read().decode('utf-8', errors='replace').strip()
+            # Preserve command output exactly (including leading tabs/spaces/newlines),
+            # which is important for git diff content.
+            output = stdout.read().decode('utf-8', errors='replace')
+            output_stderr = stderr.read().decode('utf-8', errors='replace')
             if output_stderr:
                 output = f'[stdout]\n{output}\n\n[stderr]\n{output_stderr}'
 
