@@ -135,6 +135,20 @@ def cleanup_result_path_for_overwrite(path: Path):
                 pass
 
 
+def snapshot_run_config_files(result_path: Path, projects_file: Path, candidates_file: Path):
+    result_path.mkdir(parents=True, exist_ok=True)
+
+    for src in [projects_file, candidates_file]:
+        dst = result_path / src.name
+        shutil.copy2(src, dst)
+        fix_owner_and_mode(dst, 0o644)
+
+    if VERBOSE >= 1:
+        print(
+            f"{ts()} | saved run config files: {projects_file.name}, {candidates_file.name} -> {result_path}"
+        )
+
+
 # def read_patch_text_lossless(path: Path) -> str:
 #     # Read patch bytes and decode without whitespace normalization.
 #     # This preserves tabs/leading spaces exactly as written in patch.diff.
@@ -278,6 +292,23 @@ def pull_image_with_fallback(image: str):
     docker_client.images.pull(image)
 
 
+def remove_container_if_exists(container_name: str):
+    try:
+        stale = docker_client.containers.get(container_name)
+    except docker.errors.NotFound:
+        return
+
+    if VERBOSE >= 1:
+        print(f"{ts()} | remove stale container {container_name}")
+
+    try:
+        stale.stop(timeout=3)
+    except Exception:
+        pass
+
+    stale.remove(force=True)
+
+
 def collect_candidate_results(projects: list[list[str]], candidate: Candidate):
     rows: list[dict[str, str]] = []
     candidate_dir = RESULT_PATH / candidate.run_name
@@ -346,11 +377,13 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
     @contextmanager
     def sshbox_scope(instance: Instance, pcap_path: Path):
         ssh_password = secrets.token_hex(10)
+        sshbox_name = f"memcomp-{candidate.run_name}-{instance.ident}-sshbox"
+        remove_container_if_exists(sshbox_name)
         cont = docker_client.containers.create(
             instance.env_docker_image,
             [ssh_password],
             entrypoint=["/mnt/sshbox/start.sh"],
-            name=f"memcomp-{candidate.run_name}-{instance.ident}-sshbox",
+            name=sshbox_name,
             detach=True,
             restart_policy={"Name": "no"},
             network="infra",
@@ -395,6 +428,8 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
     def agent_scope(
         inst_path: Path, mem_path: Path, llm_key: str, ssh_conn_str: str, log_path: Path
     ):
+        agent_name = f"memcomp-{candidate.run_name}-{instance.ident}-agent"
+        remove_container_if_exists(agent_name)
         cont = docker_client.containers.create(
             candidate.agent_docker_image,
             [
@@ -409,7 +444,7 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
                 "--env-ssh",
                 ssh_conn_str,
             ],
-            name=f"memcomp-{candidate.run_name}-{instance.ident}-agent",
+            name=agent_name,
             detach=True,
             restart_policy={"Name": "no"},
             network="infra",
@@ -692,9 +727,12 @@ def eval_candidate(projects: list[list[str]], candidate: Candidate):
 
 
 if __name__ == "__main__":
-    with open("projects.json") as f:
+    projects_file = Path("projects_debug.json")
+    candidates_file = Path("candidates.json")
+
+    with projects_file.open() as f:
         projects = json.load(f)
-    with open("candidates.json") as f:
+    with candidates_file.open() as f:
         candidates = json.load(f)
 
     print(
@@ -785,6 +823,7 @@ if __name__ == "__main__":
             raise FileNotFoundError(
                 f"result path not found for collect-only mode: {RESULT_PATH}"
             )
+        snapshot_run_config_files(RESULT_PATH, projects_file, candidates_file)
 
         print(f"{ts()} | begin collect-only")
         for c in candidates:
@@ -792,6 +831,7 @@ if __name__ == "__main__":
         print(f"{ts()} | done collect-only")
     else:
         san_check()
+        snapshot_run_config_files(RESULT_PATH, projects_file, candidates_file)
         print(f"{ts()} | sanity check passed")
 
         print(f"{ts()} | begin")
