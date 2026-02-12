@@ -432,7 +432,18 @@ def load_patches_file(patch_path):
 
 
 def list_patch_files(patch_dir):
+    def _looks_like_patch_file(path):
+        try:
+            with open(path, "r") as f:
+                payload = json.load(f)
+        except Exception:
+            return False
+        if not isinstance(payload, list):
+            return False
+        return any(isinstance(item, dict) and "instance_id" in item for item in payload)
+
     patch_files = []
+    skip_prefixes = ("projects", "candidates")
     for name in sorted(os.listdir(patch_dir)):
         path = os.path.join(patch_dir, name)
         if not os.path.isfile(path):
@@ -440,6 +451,11 @@ def list_patch_files(patch_dir):
         if not name.endswith(".json"):
             continue
         if name == "eval_results.json":
+            continue
+        stem = os.path.splitext(name)[0].lower()
+        if stem.startswith(skip_prefixes):
+            continue
+        if not _looks_like_patch_file(path):
             continue
         patch_files.append(path)
     return patch_files

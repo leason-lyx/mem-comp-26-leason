@@ -19,15 +19,15 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "memcomp-agent" ]]; then
 fi
 
 # ===== Config: edit these values before running =====
-RUN_NAME="test_run6"
+RUN_NAME="test_run9"
+COLLECT_ONLY=0
 VERBOSE=2
 FILE_OWNER="zzr"
 LITELLM_TRAJ_DIR="../play/trajs"
 ROOTFS_DEVICE="/dev/sda"
 DOCKER_IMAGE_BASE="jefzda/sweap-images"
-COLLECT_ONLY=0
 EVAL_DOCKERHUB_USERNAME="jefzda"
-EVAL_NUM_WORKERS=16
+EVAL_NUM_WORKERS=32
 PYTHONUNBUFFERED=1
 
 export RUN_NAME VERBOSE FILE_OWNER LITELLM_TRAJ_DIR ROOTFS_DEVICE DOCKER_IMAGE_BASE COLLECT_ONLY PYTHONUNBUFFERED
@@ -65,4 +65,5 @@ echo "[run_main] start swe_bench_pro_eval.py: ${PYTHON_BIN} swe_bench_pro_eval.p
     --patch_dir "${PATCH_DIR}" \
     --dockerhub_username "${EVAL_DOCKERHUB_USERNAME}" \
     --scripts_dir run_scripts \
-    --num_workers "${EVAL_NUM_WORKERS}"
+    --num_workers "${EVAL_NUM_WORKERS}" \
+    --redo
