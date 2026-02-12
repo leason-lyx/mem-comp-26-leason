@@ -19,15 +19,25 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "memcomp-agent" ]]; then
 fi
 
 # ===== Config: edit these values before running =====
-RUN_NAME="test_run3"
+RUN_NAME="test_run6"
 VERBOSE=2
 FILE_OWNER="zzr"
 LITELLM_TRAJ_DIR="../play/trajs"
 ROOTFS_DEVICE="/dev/sda"
 DOCKER_IMAGE_BASE="jefzda/sweap-images"
-COLLECT_ONLY=1
+COLLECT_ONLY=0
+EVAL_DOCKERHUB_USERNAME="jefzda"
+EVAL_NUM_WORKERS=16
+PYTHONUNBUFFERED=1
 
-export RUN_NAME VERBOSE FILE_OWNER LITELLM_TRAJ_DIR ROOTFS_DEVICE DOCKER_IMAGE_BASE COLLECT_ONLY
+export RUN_NAME VERBOSE FILE_OWNER LITELLM_TRAJ_DIR ROOTFS_DEVICE DOCKER_IMAGE_BASE COLLECT_ONLY PYTHONUNBUFFERED
+
+LOG_DEST="results/${RUN_NAME}/run_main.log"
+if [[ "${COLLECT_ONLY}" == "0" ]]; then
+    mkdir -p "results/${RUN_NAME}"
+    : > "${LOG_DEST}"
+    exec > >(stdbuf -oL -eL tee -a "${LOG_DEST}") 2>&1
+fi
 
 echo "[run_main] RUN_NAME=${RUN_NAME}"
 echo "[run_main] VERBOSE=${VERBOSE}"
@@ -36,8 +46,23 @@ echo "[run_main] LITELLM_TRAJ_DIR=${LITELLM_TRAJ_DIR}"
 echo "[run_main] ROOTFS_DEVICE=${ROOTFS_DEVICE}"
 echo "[run_main] DOCKER_IMAGE_BASE=${DOCKER_IMAGE_BASE}"
 echo "[run_main] COLLECT_ONLY=${COLLECT_ONLY}"
+if [[ "${COLLECT_ONLY}" == "0" ]]; then
+    echo "[run_main] LOG_DEST=${LOG_DEST}"
+fi
+echo "[run_main] EVAL_DOCKERHUB_USERNAME=${EVAL_DOCKERHUB_USERNAME}"
+echo "[run_main] EVAL_NUM_WORKERS=${EVAL_NUM_WORKERS}"
+echo "[run_main] PYTHONUNBUFFERED=${PYTHONUNBUFFERED}"
 PYTHON_BIN="${CONDA_PREFIX}/bin/python"
 echo "[run_main] PYTHON_BIN=${PYTHON_BIN}"
-echo "[run_main] start eval: sudo -E ${PYTHON_BIN} main.py"
+echo "[run_main] start harness: sudo -E ${PYTHON_BIN} main.py"
 
 sudo -E "${PYTHON_BIN}" main.py
+
+PATCH_DIR="results/${RUN_NAME}"
+echo "[run_main] start swe_bench_pro_eval.py: ${PYTHON_BIN} swe_bench_pro_eval.py --raw_sample_path external_hf_v2.csv --patch_dir ${PATCH_DIR} --dockerhub_username ${EVAL_DOCKERHUB_USERNAME} --scripts_dir run_scripts --num_workers ${EVAL_NUM_WORKERS}"
+"${PYTHON_BIN}" swe_bench_pro_eval.py \
+    --raw_sample_path external_hf_v2.csv \
+    --patch_dir "${PATCH_DIR}" \
+    --dockerhub_username "${EVAL_DOCKERHUB_USERNAME}" \
+    --scripts_dir run_scripts \
+    --num_workers "${EVAL_NUM_WORKERS}"

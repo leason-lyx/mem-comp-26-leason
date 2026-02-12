@@ -105,6 +105,36 @@ def fix_owner_and_mode(path: Path, mode: int | None = None):
         os.chmod(path, mode, follow_symlinks=False)
 
 
+def has_existing_results(path: Path) -> bool:
+    """Return True if result dir contains previous evaluation artifacts."""
+    if not path.exists():
+        return False
+    if not path.is_dir():
+        return True
+    for child in path.iterdir():
+        if child.name == "run_main.log":
+            continue
+        return True
+    return False
+
+
+def cleanup_result_path_for_overwrite(path: Path):
+    """Cleanup old run results but keep run_main.log if present."""
+    if not path.is_dir():
+        raise FileExistsError(f"result path exists but is not directory: {path}")
+
+    for child in path.iterdir():
+        if child.name == "run_main.log":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            try:
+                child.unlink()
+            except FileNotFoundError:
+                pass
+
+
 # def read_patch_text_lossless(path: Path) -> str:
 #     # Read patch bytes and decode without whitespace normalization.
 #     # This preserves tabs/leading spaces exactly as written in patch.diff.
@@ -677,7 +707,7 @@ if __name__ == "__main__":
         assert SSHBOX_SCRIPT_PATH.exists()
         assert LITELLM_TRAJ_PATH.exists()
 
-        if RESULT_PATH.exists():
+        if RESULT_PATH.exists() and has_existing_results(RESULT_PATH):
             print(f"- {RESULT_PATH}")
             while True:
                 ans = (
@@ -685,18 +715,23 @@ if __name__ == "__main__":
                     .strip()
                     .lower()
                 )
+                # Keep terminal/log output aligned when stdout is piped through tee.
+                print("", flush=True)
                 if ans in {"y", "yes"}:
                     print(
-                        "WARNING: will cleanup existing results in 10 seconds, CTRL+C NOW to abort"
+                        "WARNING: will cleanup existing results in 10 seconds, CTRL+C NOW to abort",
+                        flush=True,
                     )
                     time.sleep(10)
-                    shutil.rmtree(RESULT_PATH, ignore_errors=True)
+                    print(f"{ts()} | cleanup old results: {RESULT_PATH}", flush=True)
+                    cleanup_result_path_for_overwrite(RESULT_PATH)
+                    print(f"{ts()} | cleanup finished: {RESULT_PATH}", flush=True)
                     break
                 if ans in {"n", "no"}:
                     raise SystemExit("aborted by user")
                 print("invalid input, please enter y or n")
 
-        RESULT_PATH.mkdir(parents=True, exist_ok=False)
+        RESULT_PATH.mkdir(parents=True, exist_ok=True)
         WORK_PATH.mkdir(parents=True, exist_ok=True)
         fix_owner_and_mode(RESULT_PATH, 0o755)
         fix_owner_and_mode(WORK_PATH, 0o755)
@@ -757,6 +792,7 @@ if __name__ == "__main__":
         print(f"{ts()} | done collect-only")
     else:
         san_check()
+        print(f"{ts()} | sanity check passed")
 
         print(f"{ts()} | begin")
         for c in candidates:

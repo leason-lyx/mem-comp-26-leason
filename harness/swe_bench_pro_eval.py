@@ -38,6 +38,7 @@ import concurrent.futures
 import json
 import os
 import platform as py_platform
+import re
 
 try:
     import docker  # Optional: used for local Docker execution
@@ -90,6 +91,26 @@ def load_local_script(scripts_dir, instance_id, script_name):
 
     with open(script_path, "r") as f:
         return f.read()
+
+
+def strip_binary_hunks(patch: str) -> str:
+    """Remove binary diff sections from a git patch."""
+    if not patch:
+        return patch
+
+    sections = re.split(r"(?=^diff --git )", patch, flags=re.MULTILINE)
+
+    kept: list[str] = []
+    for section in sections:
+        if not section.strip():
+            continue
+        if re.search(r"^Binary files .* differ$", section, re.MULTILINE):
+            continue
+        if re.search(r"^GIT binary patch$", section, re.MULTILINE):
+            continue
+        kept.append(section)
+
+    return "".join(kept)
 
 
 def create_entryscript(sample):
@@ -182,9 +203,12 @@ def assemble_workspace_files(uid, scripts_dir, patch, sample):
     run_script = load_local_script(scripts_dir, uid, "run_script.sh")
     parser_script = load_local_script(scripts_dir, uid, "parser.py")
     entryscript_content = create_entryscript(sample)
+    cleaned_patch = strip_binary_hunks(patch)
+    if cleaned_patch != patch:
+        print(f"Stripped binary diff hunks from patch for {uid}")
 
     files = {
-        "patch.diff": patch,
+        "patch.diff": cleaned_patch,
         "run_script.sh": run_script,
         "parser.py": parser_script,
         "entryscript.sh": entryscript_content,
@@ -245,7 +269,9 @@ def eval_with_docker(
     docker_platform=None,
 ):
     if docker is None:
-        raise RuntimeError("docker SDK is not installed. Install via 'pip install docker'")
+        raise RuntimeError(
+            "docker SDK is not installed. Install via 'pip install docker'"
+        )
     uid = sample["instance_id"]
     existing_output, output_path, workspace_dir = prepare_run(
         uid, output_dir, prefix, redo
@@ -270,7 +296,7 @@ def eval_with_docker(
         dockerhub_image_uri = get_dockerhub_image_uri(
             uid, dockerhub_username, sample.get("repo", "")
         )
-        print(f"Using Docker Hub image: {dockerhub_image_uri}")
+        # print(f"Using Docker Hub image: {dockerhub_image_uri}")
 
         client = docker.from_env()
         try:
