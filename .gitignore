@@ -19,3 +19,4 @@ mini-swe-agent/
 /harness/.env
 /harness/workdir/
 /harness/results/
+/temp/

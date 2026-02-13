@@ -1,3 +1,4 @@
+import argparse
 from dataclasses import dataclass, asdict
 import pandas as pd
 from pathlib import Path
@@ -729,8 +730,21 @@ def eval_candidate(projects: list[list[str]], candidate: Candidate):
 
 
 if __name__ == "__main__":
-    projects_file = Path("projects.json")
-    candidates_file = Path("candidates.json")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--projects-file",
+        default="projects_debug.json",
+        help="Path to projects JSON file",
+    )
+    parser.add_argument(
+        "--candidates-file",
+        default="candidates.json",
+        help="Path to candidates JSON file",
+    )
+    args = parser.parse_args()
+
+    projects_file = Path(args.projects_file)
+    candidates_file = Path(args.candidates_file)
 
     with projects_file.open() as f:
         projects = json.load(f)

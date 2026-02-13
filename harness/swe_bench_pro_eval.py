@@ -134,14 +134,19 @@ def create_entryscript(sample):
 
     entry_script = f"""
 {env_cmds}
+# initialize logs
+: > /workspace/stdout.log
+: > /workspace/stderr.log
 # apply patch
 cd /app
 git reset --hard {base_commit}
 git checkout {base_commit}
-git apply -v /workspace/patch.diff
+echo "=== git apply start ===" >> /workspace/stdout.log
+git apply -v /workspace/patch.diff >> /workspace/stdout.log 2>> /workspace/stderr.log
+echo "=== git apply end (exit code: $?) ===" >> /workspace/stdout.log
 {before_repo_set_cmd}
 # run test and save stdout and stderr to separate files
-bash /workspace/run_script.sh {selected_test_files_to_run} > /workspace/stdout.log 2> /workspace/stderr.log
+bash /workspace/run_script.sh {selected_test_files_to_run} >> /workspace/stdout.log 2>> /workspace/stderr.log
 # run parsing script
 python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspace/output.json
 """
