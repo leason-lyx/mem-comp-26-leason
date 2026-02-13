@@ -1,4 +1,0 @@
-mini-swe-agent~=1.0
-paramiko
-PyYAML
-requests

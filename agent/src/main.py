@@ -65,6 +65,9 @@ def main():
     
     print('done! status:', status)
     if status == 'Submitted':
+        if not result.endswith('\n'):
+            print('WARNING: patch.diff is missing trailing newline; appending one.')
+            result += '\n'
         with open(f'{args.instance_path}/patch.diff', 'w') as f:
             f.write(result)
     else:

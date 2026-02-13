@@ -22,7 +22,7 @@ services:
             - --llm-base-url
             - http://litellm_app:4000
             - --llm-api-key
-            - sk-TK01d5GMPRZLT_Z7b_Pitg
+            - sk-7QGx4hpjqkO4Km-zFgogLw
             - --env-ssh
             - root:ssh_Passw0rd@sshbox
 

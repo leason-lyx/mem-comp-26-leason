@@ -1,7 +1,7 @@
 [
     {
         "run_name": "mini_baseline",
-        "agent_docker_image": "minisweagent-withmem-example:latest",
+        "agent_docker_image": "minisweagent-withmem-debug:latest",
         "llm_quota_total": 200,
         "llm_quota_instance": 2,
         "enable_memory": false,
