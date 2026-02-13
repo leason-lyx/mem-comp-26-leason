@@ -135,7 +135,9 @@ def cleanup_result_path_for_overwrite(path: Path):
                 pass
 
 
-def snapshot_run_config_files(result_path: Path, projects_file: Path, candidates_file: Path):
+def snapshot_run_config_files(
+    result_path: Path, projects_file: Path, candidates_file: Path
+):
     result_path.mkdir(parents=True, exist_ok=True)
 
     for src in [projects_file, candidates_file]:
@@ -727,7 +729,7 @@ def eval_candidate(projects: list[list[str]], candidate: Candidate):
 
 
 if __name__ == "__main__":
-    projects_file = Path("projects_debug.json")
+    projects_file = Path("projects.json")
     candidates_file = Path("candidates.json")
 
     with projects_file.open() as f:
