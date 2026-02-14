@@ -39,6 +39,7 @@ import json
 import os
 import platform as py_platform
 import re
+import time
 
 try:
     import docker  # Optional: used for local Docker execution
@@ -262,6 +263,44 @@ def collect_outputs_local(workspace_dir, output_dir, uid, prefix):
         return None
 
 
+def _looks_like_read_timeout(exc):
+    msg = str(exc)
+    return exc.__class__.__name__ == "ReadTimeout" or "Read timed out" in msg
+
+
+def wait_container_with_retry(
+    container,
+    uid,
+    docker_api_timeout,
+    max_read_timeout_retries=3,
+    retry_sleep_s=1,
+):
+    retries = 0
+    while True:
+        try:
+            return container.wait(timeout=docker_api_timeout)
+        except Exception as wait_err:
+            if not _looks_like_read_timeout(wait_err):
+                raise
+
+            retries += 1
+            if retries > max_read_timeout_retries:
+                raise
+
+            status = "unknown"
+            try:
+                container.reload()
+                status = container.status
+            except Exception:
+                pass
+
+            print(
+                f"ReadTimeout while waiting container for {uid} "
+                f"(status={status}, retry={retries}/{max_read_timeout_retries})"
+            )
+            time.sleep(retry_sleep_s)
+
+
 def eval_with_docker(
     patch,
     sample,
@@ -272,6 +311,7 @@ def eval_with_docker(
     redo=False,
     block_network=False,
     docker_platform=None,
+    docker_api_timeout=600,
 ):
     if docker is None:
         raise RuntimeError(
@@ -303,7 +343,7 @@ def eval_with_docker(
         )
         # print(f"Using Docker Hub image: {dockerhub_image_uri}")
 
-        client = docker.from_env()
+        client = docker.from_env(timeout=docker_api_timeout)
         try:
             if docker_platform:
                 client.images.pull(dockerhub_image_uri, platform=docker_platform)
@@ -338,7 +378,11 @@ def eval_with_docker(
             **run_kwargs,
         )
 
-        result = container.wait()
+        result = wait_container_with_retry(
+            container,
+            uid,
+            docker_api_timeout=docker_api_timeout,
+        )
         status_code = result.get("StatusCode", 1) if isinstance(result, dict) else 1
         if status_code != 0:
             print(f"Entryscript failed for {uid} with return code: {status_code}")
@@ -408,6 +452,12 @@ def parse_args():
         "--block_network",
         action="store_true",
         help="Block network access inside container",
+    )
+    parser.add_argument(
+        "--docker_api_timeout",
+        type=int,
+        default=int(os.getenv("DOCKER_API_TIMEOUT", "600")),
+        help="Docker SDK API timeout in seconds (default: 600)",
     )
     return parser.parse_args()
 
@@ -530,6 +580,7 @@ def evaluate_patch_list(
                 redo=args.redo,
                 block_network=args.block_network,
                 docker_platform=docker_platform,
+                docker_api_timeout=args.docker_api_timeout,
             ): patch_sample
             for patch_sample in valid_patches
         }
