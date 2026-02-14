@@ -268,6 +268,10 @@ def _looks_like_read_timeout(exc):
     return exc.__class__.__name__ == "ReadTimeout" or "Read timed out" in msg
 
 
+class ContainerWaitTimeoutExceeded(RuntimeError):
+    pass
+
+
 def wait_container_with_retry(
     container,
     uid,
@@ -284,9 +288,6 @@ def wait_container_with_retry(
                 raise
 
             retries += 1
-            if retries > max_read_timeout_retries:
-                raise
-
             status = "unknown"
             try:
                 container.reload()
@@ -298,6 +299,11 @@ def wait_container_with_retry(
                 f"ReadTimeout while waiting container for {uid} "
                 f"(status={status}, retry={retries}/{max_read_timeout_retries})"
             )
+            if retries >= max_read_timeout_retries:
+                raise ContainerWaitTimeoutExceeded(
+                    f"Exceeded ReadTimeout retries for {uid}: "
+                    f"{retries}/{max_read_timeout_retries}"
+                ) from wait_err
             time.sleep(retry_sleep_s)
 
 
@@ -393,6 +399,16 @@ def eval_with_docker(
         save_entryscript_copy(output_dir, uid, prefix, entryscript_content)
 
         return output
+    except ContainerWaitTimeoutExceeded as e:
+        print(f"Marking patch as failed due to repeated ReadTimeout for {uid}: {e}")
+        try:
+            container.stop(timeout=3)
+        except Exception:
+            try:
+                container.kill()
+            except Exception:
+                pass
+        return None
     except Exception as e:
         print(f"Error in eval_with_docker for {uid}: {repr(e)}")
         print(f"Error type: {type(e)}")

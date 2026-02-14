@@ -683,26 +683,51 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
 def eval_candidate(projects: list[list[str]], candidate: Candidate):
     @contextmanager
     def llm_user_scope():
-        res = requests.get(
-            f"{LITELLM_CONTROLLER_BASEURL}/harness/create_user",
-            params={
+        def request_or_raise(path: str, params: dict):
+            res = requests.get(f"{LITELLM_CONTROLLER_BASEURL}{path}", params=params)
+            if not res.ok:
+                body = res.text.strip().replace("\n", "\\n")
+                if len(body) > 512:
+                    body = body[:512] + "...(truncated)"
+                raise requests.HTTPError(
+                    f"{res.status_code} {res.reason} for url: {res.url}; response={body}",
+                    response=res,
+                )
+            return res
+
+        # best-effort cleanup for stale users left by interrupted previous runs
+        try:
+            request_or_raise(
+                "/harness/delete_user",
+                {"user_id": candidate.run_name},
+            )
+            if VERBOSE >= 2:
+                print(f"{ts()} | cleaned stale llm user {candidate.run_name}")
+        except Exception as e:
+            if VERBOSE >= 2:
+                print(
+                    f"{ts()} | stale llm user cleanup skipped: "
+                    f"{candidate.run_name} ({type(e).__name__})"
+                )
+
+        request_or_raise(
+            "/harness/create_user",
+            {
                 "user_id": candidate.run_name,
                 "user_alias": candidate.run_name,
                 "quota": candidate.llm_quota_total,
             },
         )
-        res.raise_for_status()
         try:
             yield
         finally:
             if VERBOSE >= 1:
                 print(f"{ts()} | cleanup llm user {candidate.run_name}")
 
-            res = requests.get(
-                f"{LITELLM_CONTROLLER_BASEURL}/harness/delete_user",
-                params={"user_id": candidate.run_name},
+            request_or_raise(
+                "/harness/delete_user",
+                {"user_id": candidate.run_name},
             )
-            res.raise_for_status()
 
     # create llm user
     with llm_user_scope():
