@@ -19,7 +19,7 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "memcomp-agent" ]]; then
 fi
 
 # ===== Config: edit these values before running =====
-RUN_NAME="baseline_run"
+RUN_NAME="baseline_withmem_run"
 COLLECT_ONLY=0
 VERBOSE=2
 FILE_OWNER="zzr"
@@ -29,10 +29,11 @@ LITELLM_TRAJ_DIR="../play/trajs"
 ROOTFS_DEVICE="/dev/sda"
 DOCKER_IMAGE_BASE="jefzda/sweap-images"
 EVAL_DOCKERHUB_USERNAME="jefzda"
-EVAL_NUM_WORKERS=64
+EVAL_NUM_WORKERS=32
+EVAL_DOCKER_API_TIMEOUT=1200
 PYTHONUNBUFFERED=1
 
-export RUN_NAME VERBOSE FILE_OWNER LITELLM_TRAJ_DIR ROOTFS_DEVICE DOCKER_IMAGE_BASE COLLECT_ONLY PYTHONUNBUFFERED EVAL_DOCKERHUB_USERNAME EVAL_NUM_WORKERS
+export RUN_NAME VERBOSE FILE_OWNER LITELLM_TRAJ_DIR ROOTFS_DEVICE DOCKER_IMAGE_BASE COLLECT_ONLY PYTHONUNBUFFERED EVAL_DOCKERHUB_USERNAME EVAL_NUM_WORKERS EVAL_DOCKER_API_TIMEOUT
 
 LOG_DEST="results/${RUN_NAME}/run_main.log"
 if [[ "${COLLECT_ONLY}" == "0" ]]; then
@@ -55,6 +56,7 @@ if [[ "${COLLECT_ONLY}" == "0" ]]; then
 fi
 echo "[run_main] EVAL_DOCKERHUB_USERNAME=${EVAL_DOCKERHUB_USERNAME}"
 echo "[run_main] EVAL_NUM_WORKERS=${EVAL_NUM_WORKERS}"
+echo "[run_main] EVAL_DOCKER_API_TIMEOUT=${EVAL_DOCKER_API_TIMEOUT}"
 echo "[run_main] PYTHONUNBUFFERED=${PYTHONUNBUFFERED}"
 PYTHON_BIN="${CONDA_PREFIX}/bin/python"
 echo "[run_main] PYTHON_BIN=${PYTHON_BIN}"
@@ -65,11 +67,12 @@ sudo -E "${PYTHON_BIN}" main.py \
     --candidates-file "${CANDIDATES_FILE}"
 
 PATCH_DIR="results/${RUN_NAME}"
-echo "[run_main] start swe_bench_pro_eval.py: ${PYTHON_BIN} swe_bench_pro_eval.py --raw_sample_path external_hf_v2.csv --patch_dir ${PATCH_DIR} --dockerhub_username ${EVAL_DOCKERHUB_USERNAME} --scripts_dir run_scripts --num_workers ${EVAL_NUM_WORKERS}"
+echo "[run_main] start swe_bench_pro_eval.py: ${PYTHON_BIN} swe_bench_pro_eval.py --raw_sample_path external_hf_v2.csv --patch_dir ${PATCH_DIR} --dockerhub_username ${EVAL_DOCKERHUB_USERNAME} --scripts_dir run_scripts --num_workers ${EVAL_NUM_WORKERS} --docker_api_timeout ${EVAL_DOCKER_API_TIMEOUT}"
 "${PYTHON_BIN}" swe_bench_pro_eval.py \
     --raw_sample_path external_hf_v2.csv \
     --patch_dir "${PATCH_DIR}" \
     --dockerhub_username "${EVAL_DOCKERHUB_USERNAME}" \
     --scripts_dir run_scripts \
     --num_workers "${EVAL_NUM_WORKERS}" \
+    --docker_api_timeout "${EVAL_DOCKER_API_TIMEOUT}" \
     --redo
