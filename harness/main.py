@@ -101,9 +101,22 @@ def ts():
 def fix_owner_and_mode(path: Path, mode: int | None = None):
     if not path.exists():
         return
-    os.chown(path, uid=FILE_OWNER_UID, gid=FILE_OWNER_UID, follow_symlinks=False)
+
+    # Some Python/platform builds do not support follow_symlinks for chmod/chown.
+    if os.chown in os.supports_follow_symlinks:
+        os.chown(path, uid=FILE_OWNER_UID, gid=FILE_OWNER_UID, follow_symlinks=False)
+    elif path.is_symlink() and hasattr(os, "lchown"):
+        os.lchown(path, FILE_OWNER_UID, FILE_OWNER_UID)
+    elif not path.is_symlink():
+        os.chown(path, FILE_OWNER_UID, FILE_OWNER_UID)
+
     if mode is not None:
-        os.chmod(path, mode, follow_symlinks=False)
+        if os.chmod in os.supports_follow_symlinks:
+            os.chmod(path, mode, follow_symlinks=False)
+        elif path.is_symlink() and hasattr(os, "lchmod"):
+            os.lchmod(path, mode)
+        elif not path.is_symlink():
+            os.chmod(path, mode)
 
 
 def has_existing_results(path: Path) -> bool:
@@ -201,6 +214,7 @@ class Workdir:
         self.name: str = f"{stem}--{random.randint(0, 1000000)}"
         self.path: Path = WORK_PATH / self.name
         self.cleanup_fn: Callable[["Workdir"], None] | None = cleanup_fn
+        self._cleanup_running: bool = False
 
         self.path.mkdir(parents=True, exist_ok=True)
 
@@ -208,17 +222,20 @@ class Workdir:
             print(f"{ts()} | create workdir {self.name}")
 
     def cleanup(self):
-        if self.path:
+        if self.path and not self._cleanup_running:
+            self._cleanup_running = True
+            work_path = self.path
             if VERBOSE >= 1:
                 print(f"{ts()} | cleanup workdir {self.name}")
 
-            if self.cleanup_fn:
-                self.cleanup_fn(self)
-
-            if self.path.exists():
-                shutil.rmtree(self.path, ignore_errors=True)
-
-            self.path = None
+            try:
+                if self.cleanup_fn:
+                    self.cleanup_fn(self)
+            finally:
+                if work_path.exists():
+                    shutil.rmtree(work_path, ignore_errors=True)
+                self.path = None
+                self._cleanup_running = False
 
     def __enter__(self):
         return self
@@ -527,7 +544,12 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
             def perform_cleanup(log_dir: Workdir):
                 # collect memory snapshot
 
-                shutil.copytree(mem_dir.path, log_dir.path / "memory")
+                if mem_dir.path and mem_dir.path.exists():
+                    shutil.copytree(mem_dir.path, log_dir.path / "memory")
+                elif VERBOSE >= 1:
+                    print(
+                        f"{ts()} | {candidate.run_name} {instance.ident}: memory snapshot skipped (mem dir unavailable)"
+                    )
 
                 # move log_dir to results before it is cleaned up
 
@@ -542,22 +564,9 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
                 # fix permission
 
                 for dirpath, dirnames, filenames in os.walk(inst_path):
-                    os.chown(
-                        dirpath,
-                        uid=FILE_OWNER_UID,
-                        gid=FILE_OWNER_UID,
-                        follow_symlinks=False,
-                    )
-                    os.chmod(dirpath, 0o755, follow_symlinks=False)
+                    fix_owner_and_mode(Path(dirpath), 0o755)
                     for filename in filenames:
-                        fn = os.path.join(dirpath, filename)
-                        os.chown(
-                            fn,
-                            uid=FILE_OWNER_UID,
-                            gid=FILE_OWNER_UID,
-                            follow_symlinks=False,
-                        )
-                        os.chmod(fn, 0o644, follow_symlinks=False)
+                        fix_owner_and_mode(Path(dirpath) / filename, 0o644)
 
                 # fix upper-level directories so moving run folders does not require root.
                 fix_owner_and_mode(inst_path.parent, 0o755)

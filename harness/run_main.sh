@@ -19,7 +19,7 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "memcomp-agent" ]]; then
 fi
 
 # ===== Config: edit these values before running =====
-RUN_NAME="baseline_v2_run"
+RUN_NAME="baseline_v2_run1"
 COLLECT_ONLY=0
 VERBOSE=2
 FILE_OWNER="zzr"
