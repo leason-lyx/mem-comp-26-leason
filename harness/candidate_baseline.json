@@ -1,6 +1,6 @@
 [
     {
-        "run_name": "mini_baseline",
+        "run_name": "minisweagent-v2",
         "agent_docker_image": "minisweagent-v2:latest",
         "llm_quota_total": 200,
         "llm_quota_instance": 2,
