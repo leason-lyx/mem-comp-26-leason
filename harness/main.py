@@ -98,12 +98,42 @@ def ts():
     return datetime.datetime.now().isoformat()
 
 
+def apply_unique_candidate_run_name_suffix(candidates: list[dict]) -> str:
+    """Append a per-process unique suffix to candidate run_name values."""
+    run_suffix = (
+        f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(2)}"
+    )
+
+    for idx, candidate in enumerate(candidates):
+        base_name = str(candidate.get("run_name", "")).strip() or f"candidate-{idx:02d}"
+        new_name = f"{base_name}-{run_suffix}"
+        candidate["run_name"] = new_name
+
+        if VERBOSE >= 1:
+            print(f"{ts()} | candidate run_name: {base_name} -> {new_name}")
+
+    return run_suffix
+
+
 def fix_owner_and_mode(path: Path, mode: int | None = None):
     if not path.exists():
         return
-    os.chown(path, uid=FILE_OWNER_UID, gid=FILE_OWNER_UID, follow_symlinks=False)
+
+    # Some Python/platform builds do not support follow_symlinks for chmod/chown.
+    if os.chown in os.supports_follow_symlinks:
+        os.chown(path, uid=FILE_OWNER_UID, gid=FILE_OWNER_UID, follow_symlinks=False)
+    elif path.is_symlink() and hasattr(os, "lchown"):
+        os.lchown(path, FILE_OWNER_UID, FILE_OWNER_UID)
+    elif not path.is_symlink():
+        os.chown(path, FILE_OWNER_UID, FILE_OWNER_UID)
+
     if mode is not None:
-        os.chmod(path, mode, follow_symlinks=False)
+        if os.chmod in os.supports_follow_symlinks:
+            os.chmod(path, mode, follow_symlinks=False)
+        elif path.is_symlink() and hasattr(os, "lchmod"):
+            os.lchmod(path, mode)
+        elif not path.is_symlink():
+            os.chmod(path, mode)
 
 
 def has_existing_results(path: Path) -> bool:
@@ -201,6 +231,7 @@ class Workdir:
         self.name: str = f"{stem}--{random.randint(0, 1000000)}"
         self.path: Path = WORK_PATH / self.name
         self.cleanup_fn: Callable[["Workdir"], None] | None = cleanup_fn
+        self._cleanup_running: bool = False
 
         self.path.mkdir(parents=True, exist_ok=True)
 
@@ -208,17 +239,20 @@ class Workdir:
             print(f"{ts()} | create workdir {self.name}")
 
     def cleanup(self):
-        if self.path:
+        if self.path and not self._cleanup_running:
+            self._cleanup_running = True
+            work_path = self.path
             if VERBOSE >= 1:
                 print(f"{ts()} | cleanup workdir {self.name}")
 
-            if self.cleanup_fn:
-                self.cleanup_fn(self)
-
-            if self.path.exists():
-                shutil.rmtree(self.path, ignore_errors=True)
-
-            self.path = None
+            try:
+                if self.cleanup_fn:
+                    self.cleanup_fn(self)
+            finally:
+                if work_path.exists():
+                    shutil.rmtree(work_path, ignore_errors=True)
+                self.path = None
+                self._cleanup_running = False
 
     def __enter__(self):
         return self
@@ -356,14 +390,39 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
 
     @contextmanager
     def llm_key_scope(key_alias):
-        _create_key_resp = requests.get(
+        create_key_res = requests.get(
             f"{LITELLM_CONTROLLER_BASEURL}/harness/create_key",
             params={
                 "user_id": candidate.run_name,
                 "key_alias": key_alias,
                 "quota": candidate.llm_quota_instance,
             },
-        ).json()
+        )
+        if not create_key_res.ok:
+            body = create_key_res.text.strip().replace("\n", "\\n")
+            if len(body) > 512:
+                body = body[:512] + "...(truncated)"
+            raise requests.HTTPError(
+                f"{create_key_res.status_code} {create_key_res.reason} for url: "
+                f"{create_key_res.url}; response={body}",
+                response=create_key_res,
+            )
+
+        try:
+            _create_key_resp = create_key_res.json()
+        except ValueError as e:
+            body = create_key_res.text.strip().replace("\n", "\\n")
+            if len(body) > 512:
+                body = body[:512] + "...(truncated)"
+            raise ValueError(
+                f"invalid JSON from /harness/create_key for key_alias={key_alias}: {body}"
+            ) from e
+
+        if "key" not in _create_key_resp or "hash" not in _create_key_resp:
+            raise KeyError(
+                f"create_key response missing fields for key_alias={key_alias}: {_create_key_resp}"
+            )
+
         llm_key = _create_key_resp["key"]
         llm_keyhash = _create_key_resp["hash"]
         try:
@@ -527,7 +586,12 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
             def perform_cleanup(log_dir: Workdir):
                 # collect memory snapshot
 
-                shutil.copytree(mem_dir.path, log_dir.path / "memory")
+                if mem_dir.path and mem_dir.path.exists():
+                    shutil.copytree(mem_dir.path, log_dir.path / "memory")
+                elif VERBOSE >= 1:
+                    print(
+                        f"{ts()} | {candidate.run_name} {instance.ident}: memory snapshot skipped (mem dir unavailable)"
+                    )
 
                 # move log_dir to results before it is cleaned up
 
@@ -542,22 +606,9 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
                 # fix permission
 
                 for dirpath, dirnames, filenames in os.walk(inst_path):
-                    os.chown(
-                        dirpath,
-                        uid=FILE_OWNER_UID,
-                        gid=FILE_OWNER_UID,
-                        follow_symlinks=False,
-                    )
-                    os.chmod(dirpath, 0o755, follow_symlinks=False)
+                    fix_owner_and_mode(Path(dirpath), 0o755)
                     for filename in filenames:
-                        fn = os.path.join(dirpath, filename)
-                        os.chown(
-                            fn,
-                            uid=FILE_OWNER_UID,
-                            gid=FILE_OWNER_UID,
-                            follow_symlinks=False,
-                        )
-                        os.chmod(fn, 0o644, follow_symlinks=False)
+                        fix_owner_and_mode(Path(dirpath) / filename, 0o644)
 
                 # fix upper-level directories so moving run folders does not require root.
                 fix_owner_and_mode(inst_path.parent, 0o755)
@@ -571,7 +622,10 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
 
                 with (
                     # create llm key and sshbox
-                    llm_key_scope(instance.ident) as (llm_key, llm_keyhash_),
+                    llm_key_scope(f"{candidate.run_name}-{instance.ident}") as (
+                        llm_key,
+                        llm_keyhash_,
+                    ),
                     sshbox_scope(instance, log_dir.path / "pcap") as sshbox_conn_str,
                     # create harness system log file
                     (log_dir.path / "system.log").open("w") as logf,
@@ -775,10 +829,12 @@ if __name__ == "__main__":
         projects = json.load(f)
     with candidates_file.open() as f:
         candidates = json.load(f)
+    run_suffix = apply_unique_candidate_run_name_suffix(candidates)
 
     print(
         f"loaded candidates = {len(candidates)} ; instances = {sum(len(p) for p in projects)} = {[len(p) for p in projects]}"
     )
+    print(f"{ts()} | candidate run_name suffix = {run_suffix}")
 
     def san_check():
         # check path

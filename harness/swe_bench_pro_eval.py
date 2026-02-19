@@ -48,6 +48,8 @@ except Exception:
 import pandas as pd
 from tqdm import tqdm
 
+from metrics_aggregator import compute_harness_metrics
+
 
 def get_dockerhub_image_uri(uid, dockerhub_username, repo_name=""):
     """Fallback helper for harness-local usage when helper_code is unavailable."""
@@ -711,6 +713,9 @@ def main():
                 f"[{agent_name}] accuracy={run_result['accuracy']:.2%} "
                 f"({passed}/{total_evald})"
             )
+            harness_metrics = compute_harness_metrics(
+                run_output_dir, run_result["eval_results"]
+            )
 
             merged_results[agent_name] = {
                 "patch_path": patch_path,
@@ -721,6 +726,7 @@ def main():
                 "evaluated_instances": total_evald,
                 "passed_instances": passed,
                 "missing_instances": run_result["missing_instances"],
+                "harness_metrics": harness_metrics,
                 "instance_results": run_result["eval_results"],
             }
 

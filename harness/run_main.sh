@@ -19,19 +19,54 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "memcomp-agent" ]]; then
 fi
 
 # ===== Config: edit these values before running =====
-RUN_NAME="baseline_v2_run"
+RUN_NAME="agentic-mem-test"
+CANDIDATES_FILE="candidates.json"
+PROJECTS_FILE="projects_full.json"
 COLLECT_ONLY=0
 VERBOSE=2
 FILE_OWNER="zzr"
-PROJECTS_FILE="projects_full.json"
-CANDIDATES_FILE="candidates.json"
 LITELLM_TRAJ_DIR="../play/trajs"
 ROOTFS_DEVICE="/dev/sda"
 DOCKER_IMAGE_BASE="jefzda/sweap-images"
 EVAL_DOCKERHUB_USERNAME="jefzda"
 EVAL_NUM_WORKERS=32
-EVAL_DOCKER_API_TIMEOUT=1200
+EVAL_DOCKER_API_TIMEOUT=300
 PYTHONUNBUFFERED=1
+
+usage() {
+    cat <<'EOF'
+Usage: run_main.sh [--run-name <name>] [--candidates-file <file>]
+
+Options:
+  --run-name <name>         Override RUN_NAME (default: value defined in script)
+  --candidates-file <file>  Override CANDIDATES_FILE (default: value defined in script)
+  -h, --help                Show this help message
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --run-name)
+            [[ $# -ge 2 ]] || { echo "[run_main] error: --run-name requires a value" >&2; exit 2; }
+            RUN_NAME="$2"
+            shift 2
+            ;;
+        --candidates-file)
+            [[ $# -ge 2 ]] || { echo "[run_main] error: --candidates-file requires a value" >&2; exit 2; }
+            CANDIDATES_FILE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "[run_main] error: unknown argument: $1" >&2
+            usage
+            exit 2
+            ;;
+    esac
+done
 
 export RUN_NAME VERBOSE FILE_OWNER LITELLM_TRAJ_DIR ROOTFS_DEVICE DOCKER_IMAGE_BASE COLLECT_ONLY PYTHONUNBUFFERED EVAL_DOCKERHUB_USERNAME EVAL_NUM_WORKERS EVAL_DOCKER_API_TIMEOUT
 
@@ -47,17 +82,9 @@ echo "[run_main] COLLECT_ONLY=${COLLECT_ONLY}"
 echo "[run_main] PROJECTS_FILE=${PROJECTS_FILE}"
 echo "[run_main] CANDIDATES_FILE=${CANDIDATES_FILE}"
 echo "[run_main] VERBOSE=${VERBOSE}"
-echo "[run_main] FILE_OWNER=${FILE_OWNER}"
-echo "[run_main] LITELLM_TRAJ_DIR=${LITELLM_TRAJ_DIR}"
-echo "[run_main] ROOTFS_DEVICE=${ROOTFS_DEVICE}"
-echo "[run_main] DOCKER_IMAGE_BASE=${DOCKER_IMAGE_BASE}"
 if [[ "${COLLECT_ONLY}" == "0" ]]; then
     echo "[run_main] LOG_DEST=${LOG_DEST}"
 fi
-echo "[run_main] EVAL_DOCKERHUB_USERNAME=${EVAL_DOCKERHUB_USERNAME}"
-echo "[run_main] EVAL_NUM_WORKERS=${EVAL_NUM_WORKERS}"
-echo "[run_main] EVAL_DOCKER_API_TIMEOUT=${EVAL_DOCKER_API_TIMEOUT}"
-echo "[run_main] PYTHONUNBUFFERED=${PYTHONUNBUFFERED}"
 PYTHON_BIN="${CONDA_PREFIX}/bin/python"
 echo "[run_main] PYTHON_BIN=${PYTHON_BIN}"
 echo "[run_main] start harness: sudo -E ${PYTHON_BIN} main.py --projects-file ${PROJECTS_FILE} --candidates-file ${CANDIDATES_FILE}"
