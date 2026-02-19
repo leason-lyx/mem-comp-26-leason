@@ -3,8 +3,8 @@ import yaml
 import json
 from minisweagent.models.litellm_model import LitellmModel
 
-from env import SshEnvironment
-from agent import MemoryAgent  # type: ignore
+from env import SshAndMemoryEnvironment
+from agent import AgenticMemoryAgent  # type: ignore
 
 
 def main():
@@ -33,7 +33,7 @@ def main():
 
     print("mini-swe-agent v2 started!")
 
-    agent = MemoryAgent(
+    agent = AgenticMemoryAgent(
         args.memory_path,
         LitellmModel(
             model_name=config["model"]["model_name"],
@@ -46,7 +46,7 @@ def main():
             format_error_template=config["model"]["format_error_template"],
             cost_tracking="ignore_errors",
         ),
-        SshEnvironment(
+        SshAndMemoryEnvironment(
             ssh_host=ssh_host,
             ssh_port=22,
             ssh_user=ssh_user,
@@ -54,14 +54,19 @@ def main():
             cwd=config["environment"]["cwd"],
             env=config["environment"]["env"],
             timeout=config["environment"]["timeout"],
+            memory_path=args.memory_path,
         ),
         system_template=config["agent"]["system_template"],
         instance_template=config["agent"]["instance_template"],
         step_limit=config["agent"]["step_limit"],
         cost_limit=config["agent"]["cost_limit"],
+        usage_warning_ratio=config["agent"].get("usage_warning_ratio", 0.9),
+        usage_warning_message=config["agent"].get(
+            "usage_warning_message",
+            "Warning: You have used too much of your allocated budget for this task. Please consider submitting soon to avoid hitting limits.",
+        ),
     )
     result = agent.run(task)
-    agent.save_memory()
 
     status = result.get("exit_status", "")
     submission = result.get("submission", "")
