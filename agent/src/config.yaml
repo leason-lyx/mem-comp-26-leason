@@ -1,6 +1,6 @@
 agent:
   system_template: |
-    You are a helpful assistant that can interact with a computer shell to solve programming tasks.
+    You are a helpful assistant that can interact multiple times with a computer shell to solve programming tasks.
   instance_template: |
     <pr_description>
     Consider the following PR description:
@@ -63,6 +63,33 @@ agent:
     - You can use bash commands or invoke any tool that is available in the environment
     - You can also create new tools or scripts to help you with the task
     - You are prohibited from using the Internet
+
+    **IMPORTANT TOOL CREATION INSTRUCTIONS**
+
+    ## Creating your own tools
+    - You may create custom tools in Python to assist with your workflow.
+    - Compared to basic bash commands, your tools should provide stronger task-specific capabilities.
+    - Each tool must:
+      - Be implemented in Python.
+      - Provide clear and informative outputs or error messages.
+      - Be executable from the command line.
+    - You must create at least one simple file-editing tool to safely and effectively edit arbitrary files instead of relying purely on bash utilities.
+    - Tools do not need to be general-purpose; they should be designed specifically to help with the current task.
+
+    ### Example of creating a custom tool:
+    <example_response>
+    THOUGHT: I noticed that in order to solve the issue I need to ... therefore I should create a custom tool to help me ...
+
+    {"command": "cat <<'EOF' > /path/to/tool_name.py\n#!/usr/bin/env python3\nimport sys\n# Import other packages if needed\n\ndef main():\n    # Your tool logic here\n    ...\n\nif __name__ == \"__main__\":\n    main()\nEOF"}
+    {"command": "chmod +x /path/to/tool_name.py"}
+    </example_response>
+
+    ### Example of using the tool you created:
+    <example_response>
+    THOUGHT: Let me use the custom tool I created to help me with ...
+
+    {"command": "python /path/to/tool_name.py <<'EOF'\n your_input_here \nEOF"}
+    </example_response>
 
     ## Submission
 

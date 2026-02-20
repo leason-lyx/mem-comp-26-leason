@@ -1,5 +1,3 @@
-import os
-import json
 import requests
 from minisweagent.agents.default import DefaultAgent
 from minisweagent.exceptions import LimitsExceeded  # type: ignore
@@ -8,54 +6,16 @@ from minisweagent.exceptions import LimitsExceeded  # type: ignore
 class MemoryAgent(DefaultAgent):
     def __init__(self, memory_path: str, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.memory_path = f"{memory_path}/memory.json"
+        # Keep field/signature for backward compatibility; persistence is disabled.
+        self.memory_path = memory_path
         self.memorized_messages = []
         self.load_memory()
 
-    @staticmethod
-    def _sanitize_memory_message(message: dict) -> dict | None:
-        if not isinstance(message, dict):
-            return None
-
-        role = message.get("role")
-        if role not in {"user", "assistant", "tool"}:
-            return None
-
-        return {k: v for k, v in message.items() if k != "timestamp"}
-
     def load_memory(self) -> None:
-        if os.path.exists(self.memory_path):
-            with open(self.memory_path, "r") as f:
-                loaded_messages = json.load(f)
-
-            sanitized_messages = []
-            if isinstance(loaded_messages, list):
-                for message in loaded_messages:
-                    sanitized = self._sanitize_memory_message(message)
-                    if sanitized is not None:
-                        sanitized_messages.append(sanitized)
-
-            self.memorized_messages = [
-                *sanitized_messages,
-                {
-                    "role": "user",
-                    "content": "**A new task started. The project root path has been reset to a clean state for this task.**",
-                },
-            ]
-            print(f"loaded {len(self.memorized_messages)} memorized messages")
+        return
 
     def save_memory(self) -> None:
-        memory_messages = []
-        for message in self.messages:
-            if message.get("role") in {"system", "exit"}:
-                continue
-            sanitized = self._sanitize_memory_message(message)
-            if sanitized is not None:
-                memory_messages.append(sanitized)
-
-        print(f"saved {len(memory_messages)} messages to memory")
-        with open(self.memory_path, "w") as f:
-            json.dump(memory_messages, f, indent=2)
+        return
 
     def print_spend(self) -> None:
         # NOTE: spend info is updated asynchronously in litellm, and can be stale for 2~30 seconds
