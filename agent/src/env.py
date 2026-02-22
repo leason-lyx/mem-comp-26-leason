@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 import paramiko
+import requests
 import shlex
 import traceback
 from typing import Any
@@ -11,12 +12,16 @@ class SshEnvironmentConfig(BaseModel):
     ssh_port: int = 22
     ssh_user: str = ""
     ssh_password: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
     cwd: str = ""
     env: dict[str, str] = {}
     timeout: int = 180
 
 
 class SshEnvironment:
+    COST_WARNING_RATIO = 0.9
+
     def __init__(self, *, config_class: type = SshEnvironmentConfig, **kwargs):
         self.config = config_class(**kwargs)
         self._client: paramiko.SSHClient | None = None
@@ -53,6 +58,51 @@ class SshEnvironment:
         self._client = client
         return client
 
+    @staticmethod
+    def _to_optional_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    def _inject_observation_cost_context(self, result: dict[str, Any]) -> dict[str, Any]:
+        u = self.config.llm_base_url
+        api_key = self.config.llm_api_key
+        spend_value: float | None = None
+        budget_value: float | None = None
+        ratio: float | None = None
+        warning = False
+
+        if u and api_key:
+            h = {"Authorization": f"Bearer {api_key}"}
+            try:
+                info = requests.get(f"{u}/key/info", headers=h, timeout=2).json()
+                key_info = info.get("info", {})
+                if isinstance(key_info, dict):
+                    spend_value = self._to_optional_float(key_info.get("spend"))
+                    budget_value = self._to_optional_float(key_info.get("max_budget"))
+            except Exception:
+                pass
+
+        if spend_value is not None and budget_value is not None and budget_value > 0:
+            ratio = spend_value / budget_value
+            warning = ratio > self.COST_WARNING_RATIO
+            text = (
+                f"Current task cost: {spend_value:.4f} / {budget_value:.4f} "
+                f"({ratio:.2%} used)."
+            )
+        elif spend_value is not None:
+            text = f"Current task cost: {spend_value:.4f} / unknown (budget unavailable)."
+        else:
+            text = "Current task cost: unknown / unknown (budget unavailable)."
+
+        result["task_cost_used"] = spend_value
+        result["task_cost_budget"] = budget_value
+        result["task_cost_ratio"] = ratio
+        result["task_cost_warning"] = warning
+        result["task_cost_text"] = text
+        return result
+
     def execute(self, action: dict, cwd: str = "", *, timeout: int | None = None):
         command = action.get("command", "")
         print("exec command:", command.replace("\n", " \\n ")[:80])
@@ -81,6 +131,7 @@ class SshEnvironment:
                 "returncode": stdout.channel.recv_exit_status(),
                 "exception_info": "",
             }
+            self._inject_observation_cost_context(result)
             self._check_finished(result)
             return result
         except Submitted:
@@ -89,7 +140,7 @@ class SshEnvironment:
         except Exception as e:
             traceback.print_exc()
             self.close()
-            return {
+            result = {
                 "output": f"Failed to execute ({type(e).__name__}): {e}",
                 "returncode": -1,
                 "exception_info": f"An error occurred while executing the command: {e}",
@@ -98,6 +149,7 @@ class SshEnvironment:
                     "exception": str(e),
                 },
             }
+            return self._inject_observation_cost_context(result)
 
     def _check_finished(self, output: dict) -> None:
         lines = output.get("output", "").lstrip().splitlines(keepends=True)
