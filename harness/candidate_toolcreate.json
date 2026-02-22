@@ -1,6 +1,6 @@
 [
     {
-        "run_name": "agentic-mem",
+        "run_name": "toolcreate",
         "agent_docker_image": "memagent-toolcreate:latest",
         "llm_quota_total": 200,
         "llm_quota_instance": 2,
