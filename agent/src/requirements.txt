@@ -2,3 +2,4 @@ mini-swe-agent~=2.1
 paramiko
 PyYAML
 requests
+SQLAlchemy>=2.0,<3

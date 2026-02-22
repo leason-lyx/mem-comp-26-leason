@@ -124,6 +124,14 @@ model:
     <exception>{{output.exception_info}}</exception>
     {% endif -%}
     <returncode>{{output.returncode}}</returncode>
+    <task_cost>
+    {{ output.task_cost_text or 'Current task cost: 0.0000 / unknown (budget unavailable).' -}}
+    </task_cost>
+    {% if output.task_cost_warning -%}
+    <task_cost_warning>
+    Cost usage is above 90% of budget. Stop broad exploration and finish the task quickly by submitting the best final answer.
+    </task_cost_warning>
+    {% endif -%}
     {% if output.output | length < 10000 -%}
     <output>
     {{ output.output -}}

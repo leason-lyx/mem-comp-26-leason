@@ -1,84 +1,305 @@
-import os
-import json
-import requests
+import hashlib
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
 from minisweagent.agents.default import DefaultAgent
 from minisweagent.exceptions import LimitsExceeded  # type: ignore
+
+from memory_store import MEMORY_FIELDS, MemoryStore
+from memory_summarizer import MemorySummarizer
 
 
 class MemoryAgent(DefaultAgent):
     def __init__(self, memory_path: str, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.memory_path = f"{memory_path}/memory.json"
-        self.memorized_messages = []
-        self.load_memory()
+        self.memory_dir = Path(memory_path)
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.memory_store = MemoryStore(self.memory_dir / "memory.db")
+
+        model_config = getattr(self.model, "config", None)
+        model_kwargs = getattr(model_config, "model_kwargs", {}) or {}
+        self.memory_summarizer = MemorySummarizer(
+            api_base=str(model_kwargs.get("api_base", "")),
+            api_key=str(model_kwargs.get("api_key", "")),
+            model_name=str(getattr(model_config, "model_name", "")),
+        )
+
+        self.initial_top_k = 5
+        self.runtime_cooldown_steps = 6
+        self.max_runtime_injections = 3
+        self.runtime_min_overlap = 3
+        self.runtime_max_bm25 = 30.0
+
+        self._reset_run_state("")
+
+    def _reset_run_state(self, task: str) -> None:
+        self.current_task_text = task
+        self.injected_memory_ids: set[int] = set()
+        self.last_injection_step = -(10**9)
+        self.runtime_injection_count = 0
+        self._memory_saved_for_run = False
+        self._initial_memory_loaded = False
 
     @staticmethod
-    def _sanitize_memory_message(message: dict) -> dict | None:
-        if not isinstance(message, dict):
-            return None
+    def _compact_text(value: str, limit: int = 260) -> str:
+        value = " ".join(value.split())
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3] + "..."
 
-        role = message.get("role")
-        if role not in {"user", "assistant", "tool"}:
-            return None
+    def _extract_recent_commands(self, limit: int = 8) -> list[str]:
+        commands: list[str] = []
+        for message in reversed(self.messages):
+            if len(commands) >= limit:
+                break
+            extra = message.get("extra", {})
+            if not isinstance(extra, dict):
+                continue
+            actions = extra.get("actions", [])
+            if not isinstance(actions, list):
+                continue
+            for action in reversed(actions):
+                if not isinstance(action, dict):
+                    continue
+                if len(commands) >= limit:
+                    break
+                command = str(action.get("command", "")).strip()
+                if command:
+                    commands.append(command)
+        commands.reverse()
+        return commands
 
-        return {k: v for k, v in message.items() if k != "timestamp"}
+    def _build_initial_query_text(self, task: str) -> str:
+        parts = [task.strip()]
+        if len(self.messages) > 1:
+            content = self.messages[1].get("content", "")
+            if isinstance(content, str):
+                parts.append(content[:4000])
+        return "\n".join(p for p in parts if p).strip()
 
-    def load_memory(self) -> None:
-        if os.path.exists(self.memory_path):
-            with open(self.memory_path, "r") as f:
-                loaded_messages = json.load(f)
+    def _build_runtime_query_text(self) -> str:
+        snippets = [self.current_task_text[:1200]]
+        for message in self.messages[-10:]:
+            role = message.get("role")
+            content = message.get("content", "")
+            if not isinstance(content, str):
+                continue
+            if role == "tool":
+                snippets.append(content[:500])
+            elif role in {"assistant", "user"}:
+                snippets.append(content[:350])
+        snippets.extend(self._extract_recent_commands(limit=6))
+        return "\n".join(s for s in snippets if s).strip()
 
-            sanitized_messages = []
-            if isinstance(loaded_messages, list):
-                for message in loaded_messages:
-                    sanitized = self._sanitize_memory_message(message)
-                    if sanitized is not None:
-                        sanitized_messages.append(sanitized)
+    def _format_memory_injection(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        stage: str,
+    ) -> str:
+        lines = [
+            f"External memory retrieved ({stage}). Use this as hints, not strict instructions.",
+            "Only apply items relevant to the current task.",
+            "",
+        ]
+        for idx, record in enumerate(records, start=1):
+            lines.append(f"[Memory #{idx} | id={record.get('id')}]")
+            for field in MEMORY_FIELDS:
+                value = self._compact_text(str(record.get(field, "")))
+                if value:
+                    lines.append(f"- {field}: {value}")
+            lines.append("")
+        return "\n".join(lines).strip()
 
-            self.memorized_messages = [
-                *sanitized_messages,
-                {
-                    "role": "user",
-                    "content": "**A new task started. The project root path has been reset to a clean state for this task.**",
-                },
-            ]
-            print(f"loaded {len(self.memorized_messages)} memorized messages")
+    def _print_memory_records(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        stage: str,
+        step: int,
+    ) -> None:
+        print(f"[memory] injected stage={stage} step={step} count={len(records)}")
+        for idx, record in enumerate(records, start=1):
+            print(
+                f"[memory]   #{idx} id={record.get('id')} "
+                f"overlap={record.get('overlap', '?')} bm25={record.get('bm25', '?')}"
+            )
+            for field in MEMORY_FIELDS:
+                value = str(record.get(field, "")).strip()
+                if value:
+                    print(
+                        f"[memory]     {field}: {self._compact_text(value, limit=280)}"
+                    )
+
+    def _is_high_runtime_match(self, record: dict[str, Any]) -> bool:
+        overlap = int(record.get("overlap", 0))
+        bm25_raw = record.get("bm25", 9999.0)
+        try:
+            bm25 = float(bm25_raw)
+        except Exception:
+            bm25 = 9999.0
+        return overlap >= self.runtime_min_overlap and bm25 <= self.runtime_max_bm25
+
+    def _runtime_debug(self, message: str) -> None:
+        print(f"[memory][runtime-debug] {message}")
+
+    def _maybe_inject_initial_memories(self) -> None:
+        if self._initial_memory_loaded:
+            return
+        self._initial_memory_loaded = True
+
+        query_text = self._build_initial_query_text(self.current_task_text)
+        if not query_text:
+            return
+        records = self.memory_store.search(
+            query_text,
+            top_k=self.initial_top_k,
+            candidate_k=self.initial_top_k * 4,
+        )
+        if not records:
+            return
+
+        message = self.model.format_message(
+            role="user",
+            content=self._format_memory_injection(records, stage="task-start"),
+        )
+        self.add_messages(message)  # type: ignore
+        self.injected_memory_ids.update(int(record.get("id", 0)) for record in records)
+        self.last_injection_step = self.n_calls
+        self._print_memory_records(records, stage="task-start", step=self.n_calls)
+        print(f"loaded {len(records)} external memories for task start")
+
+    def _maybe_inject_runtime_memories(self) -> None:
+        self._runtime_debug(
+            "check start: "
+            f"step={self.n_calls} "
+            f"runtime_injection_count={self.runtime_injection_count}/{self.max_runtime_injections} "
+            f"last_injection_step={self.last_injection_step}"
+        )
+        if self.runtime_injection_count >= self.max_runtime_injections:
+            self._runtime_debug("skip: reached max runtime injections")
+            return
+        step_since_last = self.n_calls - self.last_injection_step
+        if step_since_last < self.runtime_cooldown_steps:
+            self._runtime_debug(
+                "skip: cooldown active "
+                f"(steps_since_last={step_since_last}, need>={self.runtime_cooldown_steps})"
+            )
+            return
+
+        query_text = self._build_runtime_query_text()
+        if len(query_text) < 24:
+            self._runtime_debug(
+                f"skip: query_text too short (len={len(query_text)}), "
+                f"query_preview={self._compact_text(query_text, limit=120)}"
+            )
+            return
+
+        self._runtime_debug(
+            f"query ready (len={len(query_text)}), preview={self._compact_text(query_text, limit=200)}"
+        )
+        candidates = self.memory_store.search(query_text, top_k=3, candidate_k=10)
+        self._runtime_debug(f"search returned {len(candidates)} candidate(s)")
+        selected: dict[str, Any] | None = None
+        for candidate in candidates:
+            cid = int(candidate.get("id", 0))
+            overlap = int(candidate.get("overlap", 0))
+            try:
+                bm25 = float(candidate.get("bm25", 9999.0))
+            except Exception:
+                bm25 = 9999.0
+
+            if cid in self.injected_memory_ids:
+                self._runtime_debug(f"reject candidate id={cid}: already injected")
+                continue
+            if not self._is_high_runtime_match(candidate):
+                self._runtime_debug(
+                    f"reject candidate id={cid}: "
+                    f"overlap={overlap} (need>={self.runtime_min_overlap}), "
+                    f"bm25={bm25} (need<={self.runtime_max_bm25})"
+                )
+                continue
+            self._runtime_debug(
+                f"accept candidate id={cid}: overlap={overlap}, bm25={bm25}"
+            )
+            selected = candidate
+            break
+
+        if selected is None:
+            self._runtime_debug("skip: no candidate passed runtime filters")
+            return
+
+        message = self.model.format_message(
+            role="user",
+            content=self._format_memory_injection([selected], stage="runtime"),
+        )
+        self.add_messages(message)  # type: ignore
+        self.injected_memory_ids.add(int(selected.get("id", 0)))
+        self.last_injection_step = self.n_calls
+        self.runtime_injection_count += 1
+        self._print_memory_records([selected], stage="runtime", step=self.n_calls)
+        print(
+            "injected runtime memory id="
+            f"{selected.get('id')} overlap={selected.get('overlap')} bm25={selected.get('bm25')}"
+        )
+
+    def _extract_exit_status(self) -> str:
+        for message in reversed(self.messages):
+            if message.get("role") == "exit":
+                extra = message.get("extra", {})
+                if isinstance(extra, dict):
+                    return str(extra.get("exit_status", "Unknown"))
+                return "Unknown"
+        return "Unknown"
 
     def save_memory(self) -> None:
-        memory_messages = []
-        for message in self.messages:
-            if message.get("role") in {"system", "exit"}:
-                continue
-            sanitized = self._sanitize_memory_message(message)
-            if sanitized is not None:
-                memory_messages.append(sanitized)
+        if self._memory_saved_for_run:
+            return
 
-        print(f"saved {len(memory_messages)} messages to memory")
-        with open(self.memory_path, "w") as f:
-            json.dump(memory_messages, f, indent=2)
+        exit_status = self._extract_exit_status()
+        summary = self.memory_summarizer.summarize(
+            task=self.current_task_text,
+            messages=self.messages,
+            exit_status=exit_status,
+        )
 
-    def print_spend(self) -> None:
-        # NOTE: spend info is updated asynchronously in litellm, and can be stale for 2~30 seconds
-        # see https://github.com/BerriAI/litellm/blob/d07c87860db91c7bbf5a051d1cf82857432bf856/litellm/proxy/utils.py#L3874
+        created_at = datetime.now(timezone.utc).isoformat()
+        task_hash = hashlib.sha256(self.current_task_text.encode("utf-8")).hexdigest()[
+            :16
+        ]
+        record: dict[str, Any] = {
+            "created_at": created_at,
+            "exit_status": exit_status,
+            "task_hash": task_hash,
+            "summary_version": self.memory_summarizer.summary_version,
+            **summary,
+        }
+        for field in MEMORY_FIELDS:
+            record.setdefault(field, "")
 
-        u = self.model.config.model_kwargs["api_base"]
-        h = {"Authorization": f'Bearer {self.model.config.model_kwargs["api_key"]}'}
+        memory_id = self.memory_store.insert_memory(record)
+        self._memory_saved_for_run = True
+        print(
+            f"[memory] saved id={memory_id} "
+            f"exit_status={record.get('exit_status', '')} "
+            f"task_hash={record.get('task_hash', '')}"
+        )
+        for field in MEMORY_FIELDS:
+            value = str(record.get(field, "")).strip()
+            if value:
+                print(f"[memory]   {field}: {self._compact_text(value, limit=280)}")
+        print(f"saved structured memory id={memory_id} (exit_status={exit_status})")
 
+    def run(self, task: str = "", **kwargs) -> dict:
+        self._reset_run_state(task)
         try:
-            info = requests.get(f"{u}/user/info", headers=h, timeout=2).json()
-            user_spend = f'{info["user_info"]["spend"]:.4f} / {info["user_info"]["max_budget"]:.4f}'
-        except Exception:
-            user_spend = "???"
-
-        try:
-            info = requests.get(f"{u}/key/info", headers=h, timeout=2).json()
-            key_spend = (
-                f'{info["info"]["spend"]:.4f} / {info["info"]["max_budget"]:.4f}'
-            )
-        except Exception:
-            key_spend = "???"
-
-        print(f"spend so far: key {key_spend}, user {user_spend}")
+            return super().run(task, **kwargs)
+        finally:
+            try:
+                self.save_memory()
+            except Exception as exc:
+                print(f"failed to save memory: {type(exc).__name__}: {exc}")
 
     def query(self) -> dict:
         """Query the model and return the response."""
@@ -98,14 +319,13 @@ class MemoryAgent(DefaultAgent):
                 }
             )
 
-        self.print_spend()
+        self._maybe_inject_initial_memories()
+        self._maybe_inject_runtime_memories()
+
         print(f"query llm: step {self.n_calls}")
 
-        # insert memorized messages after the first message (system prompt)
-        messages = [*self.messages[:1], *self.memorized_messages, *self.messages[1:]]
-
         self.n_calls += 1
-        message = self.model.query(messages)
+        message = self.model.query(self.messages)
         self.cost += message.get("extra", {}).get("cost", 0.0)
         self.add_messages(message)  # type: ignore
         return message

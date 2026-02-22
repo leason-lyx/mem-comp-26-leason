@@ -51,6 +51,8 @@ def main():
             ssh_port=22,
             ssh_user=ssh_user,
             ssh_password=ssh_password,
+            llm_base_url=args.llm_base_url,
+            llm_api_key=args.llm_api_key,
             cwd=config["environment"]["cwd"],
             env=config["environment"]["env"],
             timeout=config["environment"]["timeout"],
