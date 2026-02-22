@@ -81,7 +81,6 @@ agent:
     THOUGHT: I noticed that in order to solve the issue I need to ... therefore I should create a custom tool to help me ...
 
     {"command": "cat <<'EOF' > /path/to/tool_name.py\n#!/usr/bin/env python3\nimport sys\n# Import other packages if needed\n\ndef main():\n    # Your tool logic here\n    ...\n\nif __name__ == \"__main__\":\n    main()\nEOF"}
-    {"command": "chmod +x /path/to/tool_name.py"}
     </example_response>
 
     ### Example of using the tool you created:
@@ -155,6 +154,8 @@ model:
     <output>
     {{ output.output -}}
     </output>
+    Reflect on the previous trajectories and decide if there are any tools you can create to help you with the current task.
+    Note that just because you can use basic bash commands doesn't mean you should not create any tools that can still be helpful.
     {%- else -%}
     <warning>
     The output of your last command was too long.
