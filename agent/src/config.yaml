@@ -25,34 +25,6 @@ agent:
     1. Include a THOUGHT section explaining your reasoning and what you're trying to accomplish
     2. Provide one or more bash tool calls to execute
 
-    ## Memory
-    You have access to a persistent memory system at `/mnt/memory` where you can read and write markdown files to store reusable knowledge across tasks in the same repository.
-    You must use this memory system to store important findings, reusable rules, and lessons learned that can help future tasks in the same repository.
-
-    ### Memory Structure and Usage
-    /mnt/memory/AGENTS.md contans high-level insights and important notes, such as:
-      - repo structure
-      - important files (config, routing, error handling, etc) and their purposes
-      - building and testing instructions
-      - common patterns and practices in the codebase
-    /mnt/memory/cards/*.md contains topic-specific detailed entries, such as:
-      - Root cause of an issue the associated risks
-      - detailed summary of how a specific module works
-    You should write down transferable knowledge that can be reused in future tasks.
-
-    Routing rule: any command that contains `/mnt/memory` is treated as a memory-environment command.
-    Do not mix `/mnt/memory` operations and normal repository operations in the same command.
-
-    ### Memory Writing Format
-    - When updating `/mnt/memory/AGENTS.md` or `/mnt/memory/cards/*.md`, keep entries concise and structured.
-    - Think of those files as a shared knowledge base for your colleagues and your future self, emphasize reusable conclusions over verbose transcripts.
-    - Use Markdown headings (#, ##, etc.) for structure.
-    - Keep the AGENTS.md document concise. 200-400 words is optimal.
-    - Keep explanations short, direct, and specific to this repository.
-    - Provide examples where helpful (commands, directory paths, naming patterns).
-    - Maintain a professional, instructional tone.
-    - Add keywords and tags to entries when appropriate to facilitate future search and reuse.
-
     ## Important Boundaries
     - MODIFY: Regular source code files in the cloned directory (this is the working directory for all your subsequent commands)
     - DO NOT MODIFY: Tests, configuration files (pyproject.toml, setup.cfg, etc.)
@@ -101,6 +73,68 @@ agent:
     - You can use bash commands or invoke any tool that is available in the environment
     - You can also create new tools or scripts to help you with the task
     - You are prohibited from using the Internet
+
+    ## Memory
+    You have access to a persistent memory system at `/mnt/memory` where you can read and write markdown files to store reusable knowledge across tasks in the same repository.
+    Execute commands which contain `/mnt/memory` to read and write to this memory system.
+    You must use this memory system to store important findings, reusable rules, and lessons learned that can help future tasks in the same repository.
+
+    ### Memory Structure and Usage
+    If `/mnt/memory` is empty at the start of your task, you should create and maintain a structured memory system that organizes information in a way that makes it easy to find and reuse for future tasks.
+    An example structure of the memory system could look like this:
+    <example_memory_structure>
+    AGENTS.md
+    ARCHITECTURE.md
+    docs/
+    ├── design-docs/
+    │   ├── index.md
+    │   ├── core-beliefs.md
+    │   └── ...
+    ├── exec-plans/
+    │   ├── active/
+    │   ├── completed/
+    │   └── tech-debt-tracker.md
+    ├── generated/
+    │   └── db-schema.md
+    ├── product-specs/
+    │   ├── index.md
+    │   ├── new-user-onboarding.md
+    │   └── ...
+    ├── references/
+    │   ├── design-system-reference-llms.txt
+    │   ├── nixpacks-llms.txt
+    │   ├── uv-llms.txt
+    │   └── ...
+    ├── DESIGN.md
+    ├── FRONTEND.md
+    ├── PLANS.md
+    ├── PRODUCT_SENSE.md
+    ├── QUALITY_SCORE.md
+    ├── RELIABILITY.md
+    └── SECURITY.md
+    </example_memory_structure>
+
+    Instead of treating AGENTS.md as the encyclopedia, you should treat it as the table of contents.
+    The repository's knowledge base lives in a structured docs/ directory treated as the system of record. 
+    A short AGENTS.md (roughly 100 lines) serves primarily as a map, with pointers to deeper sources of truth elsewhere.
+    You should read AGENTS.md at the start of your task to orient yourself and then dive into the linked documents for deeper understanding as needed.
+
+    Design documentation should be catalogued and indexed, including verification status and a set of core beliefs that define agent-first operating principles. Architecture documentation provides a top-level map of domains and package layering. A quality document grades each product domain and architectural layer, tracking gaps over time.
+    Plans are treated as first-class artifacts. Ephemeral lightweight plans are used for small changes, while complex work is captured in execution plans with progress and decision logs that are checked into the repository. Active plans, completed plans, and known technical debt are all versioned and co-located, allowing agents to operate without relying on external context.
+    The structure of the memory system is flexible and should be adapted to the needs of the repository, but it should always be organized and structured in a way that makes it easy to find and reuse information.
+
+    Routing rule: any command that contains `/mnt/memory` is treated as a memory-environment command.
+    Do not mix `/mnt/memory` operations and normal repository operations in the same command.
+
+    ### Memory Writing Format
+    - When updating documents in `/mnt/memory`, keep entries concise and structured.
+    - Think of those files as a shared knowledge base for your colleagues and your future self, emphasize reusable conclusions over verbose transcripts.
+    - Use Markdown headings (#, ##, etc.) for structure.
+    - Keep the AGENTS.md document concise. 200-400 words is optimal.
+    - Keep explanations short, direct, and specific to this repository.
+    - Provide examples where helpful (commands, directory paths, naming patterns).
+    - Maintain a professional, instructional tone.
+    - Add keywords and tags to entries when appropriate to facilitate future search and reuse.
 
     ## Submission
 
@@ -173,6 +207,8 @@ model:
     <output>
     {{ output.output -}}
     </output>
+    If you are exploring a new issue, you can search your memory system for any relevant information to help you understand the context and avoid redundant exploration.
+    If you gather useful information that could be relevant for future tasks, you should write it to your memory system with clear explanations and examples to make it easy to find and reuse for future tasks.
     {%- else -%}
     <warning>
     The output of your last command was too long.

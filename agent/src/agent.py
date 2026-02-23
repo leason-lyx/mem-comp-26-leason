@@ -1,108 +1,22 @@
 from pathlib import Path
-from datetime import datetime, timezone
 
 import requests
-from minisweagent.agents.default import DefaultAgent
+from minisweagent.agents.default import DefaultAgent  # type: ignore
 from minisweagent.exceptions import InterruptAgentFlow, LimitsExceeded  # type: ignore
-from memory_logging import build_one_line_memory_hint, emit_memory_log
 
 
 class AgenticMemoryAgent(DefaultAgent):
-    AGENTS_STARTUP_MAX_CHARS = 12000
-    AGENTS_TEMPLATE = """# AGENTS Memory
-
-## Project Structure & Module Organization
-
-## Build, Test, and Development Commands
-
-## Testing Guidelines
-
-## Coding Style & Naming Conventions
-
-"""
-
     def __init__(self, memory_path: str, *args, **kwargs):
         usage_warning_ratio = self._to_float(kwargs.pop("usage_warning_ratio", 0.9))
         usage_warning_message = kwargs.pop("usage_warning_message")
         super().__init__(*args, **kwargs)
         self.memory_root = Path(memory_path)
-        self.agents_md_path = self.memory_root / "AGENTS.md"
-        self.topic_dir = self.memory_root / "cards"
         self.usage_warning_ratio = (
             usage_warning_ratio
             if usage_warning_ratio is not None and usage_warning_ratio > 0
             else 0.9
         )
         self.usage_warning_message = str(usage_warning_message)
-        self._ensure_memory_layout()
-
-    def _emit_memory_event(
-        self,
-        event: str,
-        *,
-        command: str = "",
-        returncode: int = 0,
-        is_write: bool = False,
-        stdout: str = "",
-        stderr: str = "",
-        path_hint: str = "",
-        output_len: int | None = None,
-        details: dict | None = None,
-    ) -> None:
-        hint = build_one_line_memory_hint(
-            event,
-            command,
-            returncode,
-            is_write,
-        )
-        print(hint, flush=True)
-        emit_memory_log(
-            event,
-            command=command,
-            returncode=returncode,
-            is_write=is_write,
-            stdout=stdout,
-            stderr=stderr,
-            path_hint=path_hint or str(self.memory_root),
-            output_len=output_len,
-            details=details,
-        )
-
-    def _ensure_memory_layout(self) -> None:
-        self.memory_root.mkdir(parents=True, exist_ok=True)
-        self.topic_dir.mkdir(parents=True, exist_ok=True)
-        if not self.agents_md_path.exists():
-            self.agents_md_path.write_text(self.AGENTS_TEMPLATE.strip() + "\n")
-            self._emit_memory_event(
-                "memory_bootstrap_created",
-                command="bootstrap",
-                path_hint=str(self.agents_md_path),
-            )
-
-    def _read_text_with_limit(self, path: Path, max_chars: int) -> str:
-        if not path.exists():
-            return "(missing)"
-        text = path.read_text(errors="replace")
-        if len(text) <= max_chars:
-            return text
-        half = max_chars // 2
-        truncated = len(text) - (half * 2)
-        return f"{text[:half]}\n...<TRUNCATED {truncated} CHARS>...\n{text[-half:]}"
-
-    def _build_memory_context_message(self) -> tuple[str, int]:
-        agents_text = self._read_text_with_limit(
-            self.agents_md_path, self.AGENTS_STARTUP_MAX_CHARS
-        )
-        topic_count = sum(1 for _ in self.topic_dir.glob("*.md"))
-        content = (
-            "Persistent memory is available at `/mnt/memory`.\n"
-            "Read AGENTS.md first, then discover relevant topic files via listing and keyword search.\n\n"
-            "<agents_md>\n"
-            f"{agents_text}\n"
-            "</agents_md>\n\n"
-            "You should update `/mnt/memory/AGENTS.md` and topic files in `/mnt/memory/cards/` with reusable lessons before submission."
-        )
-        return content, topic_count
 
     def _litellm_base_url(self) -> str:
         return self.model.config.model_kwargs["api_base"]
@@ -207,18 +121,6 @@ class AgenticMemoryAgent(DefaultAgent):
                 role="user",
                 content=self._render_template(self.config.instance_template),
             ),
-        )
-
-        memory_context, topic_count = self._build_memory_context_message()
-        self.add_messages(
-            self.model.format_message(role="user", content=memory_context)
-        )
-        self._emit_memory_event(
-            "memory_context_loaded",
-            command="startup_memory_load",
-            stdout=memory_context,
-            path_hint=str(self.memory_root),
-            details={"topic_count": topic_count},
         )
 
         while True:
