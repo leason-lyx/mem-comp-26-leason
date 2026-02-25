@@ -25,7 +25,7 @@ class MemoryAgent(DefaultAgent):
             model_name=str(getattr(model_config, "model_name", "")),
         )
 
-        self.initial_top_k = 5
+        self.initial_top_k = 25
         self.runtime_cooldown_steps = 6
         self.max_runtime_injections = 3
         self.runtime_min_overlap = 3
