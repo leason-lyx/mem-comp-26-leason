@@ -20,3 +20,4 @@ mini-swe-agent/
 /harness/workdir/
 /harness/results/
 /temp/
+harness/result_statistics.ipynb
