@@ -1,18 +1,41 @@
+import json
 import hashlib
+import logging
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from minisweagent.agents.default import DefaultAgent
-from minisweagent.exceptions import LimitsExceeded  # type: ignore
+from jinja2 import StrictUndefined, Template
+
+from minisweagent import Environment, Model, __version__
+from minisweagent.agents.default import AgentConfig
+from minisweagent.exceptions import InterruptAgentFlow, LimitsExceeded  # type: ignore
+from minisweagent.utils.serialize import recursive_merge
 
 from memory_store import MEMORY_FIELDS, MemoryStore
 from memory_summarizer import MemorySummarizer
 
 
-class MemoryAgent(DefaultAgent):
-    def __init__(self, memory_path: str, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class MemoryAgent:
+    def __init__(
+        self,
+        memory_path: str,
+        model: Model,
+        env: Environment,
+        *,
+        config_class: type = AgentConfig,
+        **kwargs,
+    ):
+        self.config = config_class(**kwargs)
+        self.messages: list[dict] = []
+        self.model = model
+        self.env = env
+        self.extra_template_vars = {}
+        self.logger = logging.getLogger("agent")
+        self.cost = 0.0
+        self.n_calls = 0
+
         self.memory_dir = Path(memory_path)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.memory_store = MemoryStore(self.memory_dir / "memory.db")
@@ -32,6 +55,40 @@ class MemoryAgent(DefaultAgent):
         self.runtime_max_bm25 = 30.0
 
         self._reset_run_state("")
+
+    def get_template_vars(self, **kwargs) -> dict:
+        return recursive_merge(
+            self.config.model_dump(),
+            self.env.get_template_vars(),
+            self.model.get_template_vars(),
+            {"n_model_calls": self.n_calls, "model_cost": self.cost},
+            self.extra_template_vars,
+            kwargs,
+        )
+
+    def _render_template(self, template: str) -> str:
+        return Template(template, undefined=StrictUndefined).render(
+            **self.get_template_vars()
+        )
+
+    def add_messages(self, *messages: dict) -> list[dict]:
+        self.logger.debug(messages)  # set log level to debug to see
+        self.messages.extend(messages)
+        return list(messages)
+
+    def handle_uncaught_exception(self, e: Exception) -> list[dict]:
+        return self.add_messages(
+            self.model.format_message(
+                role="exit",
+                content=str(e),
+                extra={
+                    "exit_status": type(e).__name__,
+                    "submission": "",
+                    "exception_str": str(e),
+                    "traceback": traceback.format_exc(),
+                },
+            )
+        )
 
     def _reset_run_state(self, task: str) -> None:
         self.current_task_text = task
@@ -294,12 +351,40 @@ class MemoryAgent(DefaultAgent):
     def run(self, task: str = "", **kwargs) -> dict:
         self._reset_run_state(task)
         try:
-            return super().run(task, **kwargs)
+            self.extra_template_vars |= {"task": task, **kwargs}
+            self.messages = []
+            self.add_messages(
+                self.model.format_message(
+                    role="system",
+                    content=self._render_template(self.config.system_template),
+                ),
+                self.model.format_message(
+                    role="user",
+                    content=self._render_template(self.config.instance_template),
+                ),
+            )
+            while True:
+                try:
+                    self.step()
+                except InterruptAgentFlow as e:
+                    self.add_messages(*e.messages)
+                except Exception as e:
+                    self.handle_uncaught_exception(e)
+                    raise
+                finally:
+                    self.save(self.config.output_path)
+                if self.messages[-1].get("role") == "exit":
+                    break
+            return self.messages[-1].get("extra", {})
         finally:
             try:
                 self.save_memory()
             except Exception as exc:
                 print(f"failed to save memory: {type(exc).__name__}: {exc}")
+
+    def step(self) -> list[dict]:
+        """Query the LM, execute actions."""
+        return self.execute_actions(self.query())
 
     def query(self) -> dict:
         """Query the model and return the response."""
@@ -329,3 +414,50 @@ class MemoryAgent(DefaultAgent):
         self.cost += message.get("extra", {}).get("cost", 0.0)
         self.add_messages(message)  # type: ignore
         return message
+
+    def execute_actions(self, message: dict) -> list[dict]:
+        """Execute actions in message, add observation messages, return them."""
+        outputs = [
+            self.env.execute(action)
+            for action in message.get("extra", {}).get("actions", [])
+        ]
+        return self.add_messages(
+            *self.model.format_observation_messages(
+                message, outputs, self.get_template_vars()
+            )
+        )
+
+    def serialize(self, *extra_dicts) -> dict:
+        """Serialize agent state to a json-compatible nested dictionary for saving."""
+        last_message = self.messages[-1] if self.messages else {}
+        last_extra = last_message.get("extra", {})
+        agent_data = {
+            "info": {
+                "model_stats": {
+                    "instance_cost": self.cost,
+                    "api_calls": self.n_calls,
+                },
+                "config": {
+                    "agent": self.config.model_dump(mode="json"),
+                    "agent_type": f"{self.__class__.__module__}.{self.__class__.__name__}",
+                },
+                "mini_version": __version__,
+                "exit_status": last_extra.get("exit_status", ""),
+                "submission": last_extra.get("submission", ""),
+            },
+            "messages": self.messages,
+            "trajectory_format": "mini-swe-agent-1.1",
+        }
+        return recursive_merge(
+            agent_data, self.model.serialize(), self.env.serialize(), *extra_dicts
+        )
+
+    def save(self, path: Path | None, *extra_dicts) -> dict:
+        """Save the trajectory of the agent to a file if path is given. Returns full serialized data.
+        You can pass additional dictionaries with extra data to be (recursively) merged into the output data.
+        """
+        data = self.serialize(*extra_dicts)
+        if path:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2))
+        return data
