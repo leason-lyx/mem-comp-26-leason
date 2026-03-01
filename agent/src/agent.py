@@ -7,14 +7,20 @@ from pathlib import Path
 from typing import Any
 
 from jinja2 import StrictUndefined, Template
+from pydantic import Field
 
 from minisweagent import Environment, Model, __version__
 from minisweagent.agents.default import AgentConfig
 from minisweagent.exceptions import InterruptAgentFlow, LimitsExceeded  # type: ignore
 from minisweagent.utils.serialize import recursive_merge
 
+from context_compression import CompressionConfig, ContextCompressor
 from memory_store import MEMORY_FIELDS, MemoryStore
 from memory_summarizer import MemorySummarizer
+
+
+class MemoryAgentConfig(AgentConfig):
+    compression: CompressionConfig = Field(default_factory=CompressionConfig)
 
 
 class MemoryAgent:
@@ -24,7 +30,7 @@ class MemoryAgent:
         model: Model,
         env: Environment,
         *,
-        config_class: type = AgentConfig,
+        config_class: type = MemoryAgentConfig,
         **kwargs,
     ):
         self.config = config_class(**kwargs)
@@ -47,12 +53,35 @@ class MemoryAgent:
             api_key=str(model_kwargs.get("api_key", "")),
             model_name=str(getattr(model_config, "model_name", "")),
         )
+        compression_cfg = getattr(self.config, "compression", CompressionConfig())
+        if not isinstance(compression_cfg, CompressionConfig):
+            compression_cfg = CompressionConfig.model_validate(compression_cfg)
+        self.context_compressor = ContextCompressor(
+            config=compression_cfg,
+            api_base=str(model_kwargs.get("api_base", "")),
+            api_key=str(model_kwargs.get("api_key", "")),
+            default_model_name=str(getattr(model_config, "model_name", "")),
+            log_fn=print,
+        )
+        active_compression_config: dict[str, Any] = {}
+        if compression_cfg.mode == "summary":
+            active_compression_config = compression_cfg.summary.model_dump()
+        elif compression_cfg.mode == "agentdiet":
+            active_compression_config = compression_cfg.agentdiet.model_dump()
+        elif compression_cfg.mode == "obs_masking":
+            active_compression_config = compression_cfg.obs_masking.model_dump()
+        print(
+            "[compression] startup "
+            f"mode={compression_cfg.mode} "
+            f"config={json.dumps(active_compression_config, ensure_ascii=False)}"
+        )
 
         self.initial_top_k = 25
-        self.runtime_cooldown_steps = 6
-        self.max_runtime_injections = 3
-        self.runtime_min_overlap = 3
-        self.runtime_max_bm25 = 30.0
+        # Runtime memory injection is currently disabled.
+        # self.runtime_cooldown_steps = 6
+        # self.max_runtime_injections = 3
+        # self.runtime_min_overlap = 3
+        # self.runtime_max_bm25 = 30.0
 
         self._reset_run_state("")
 
@@ -404,8 +433,15 @@ class MemoryAgent:
                 }
             )
 
+        compression_event = self.context_compressor.maybe_compress(
+            messages=self.messages,
+            current_step=self.n_calls,
+            task=self.current_task_text,
+        )
+
         self._maybe_inject_initial_memories()
-        self._maybe_inject_runtime_memories()
+        # Runtime memory injection is currently disabled.
+        # self._maybe_inject_runtime_memories()
 
         print(f"query llm: step {self.n_calls}")
 

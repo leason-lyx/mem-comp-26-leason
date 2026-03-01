@@ -61,6 +61,7 @@ def main():
         instance_template=config["agent"]["instance_template"],
         step_limit=config["agent"]["step_limit"],
         cost_limit=config["agent"]["cost_limit"],
+        compression=config.get("compression", {}),
     )
     result = agent.run(task)
     agent.save_memory()

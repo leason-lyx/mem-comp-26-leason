@@ -101,8 +101,70 @@ agent:
     - You CANNOT continue working (reading, editing, testing) in any way on this task after submitting.
     </CRITICAL>
     </instructions>
-  step_limit: 500
+  step_limit: 600
   cost_limit: 0
+
+compression:
+  mode: "summary"
+  compressor_model_name: null
+  timeout_s: 45
+  summary:
+    context_char_threshold: 100000
+    keep_recent_steps: 20
+    summary_prompt: |
+      You are maintaining a context-aware state summary for an interactive agent working on software engineering tasks (specifically, bug fixes within the SWE-bench framework). You will be given a list of turns corresponding to actions taken by the agent and their resulting observations, and the most recent previous summary if one exists. Track:
+
+      USER_CONTEXT: (Preserve essential user requirements, goals, and clarifications in concise form)
+
+      COMPLETED: (Sub-tasks completed so far, with brief results)
+      PENDING: (Key sub-tasks that still need to be done)
+      CURRENT_STATE: (Current variables, data structures, or relevant environmental state not covered elsewhere)
+      CODE_STATE: (File paths, function signatures, data structures followed by their current state)
+      TESTS: (Failing cases, error messages, outputs)
+      CHANGES: (Code edits, variable updates)
+      DEPS: (Dependencies, imports, external calls)
+
+      PRIORITIZE:
+
+      1. Capture key user requirements and goals (from the initial issue)
+      2. Distinguish between completed and pending sub-tasks clearly
+      3. Keep all sections concise and relevant to fixing the issue
+      4. Focus on information that quantifies the agent's progress towards a solution
+
+      Example format:
+
+      USER_CONTEXT: Fix a ZeroDivisionError in utils.calculate_ratio when denominator is zero. The function should return 0 in this case.
+      COMPLETED:
+      1. Reproduced ZeroDivisionError with calculate_ratio(5, 0).
+      2. Identified missing check for denominator == 0 in utils.py.
+      3. Added test case test_calculate_ratio_zero_denominator to tests/test_utils.py.
+      4. Modified utils.calculate_ratio to return 0 if denominator is 0.
+      5. Verified test_calculate_ratio_zero_denominator now passes.
+      6. All tests in tests/test_utils.py are passing. 
+      PENDING: 
+      1. Prepare final patch file for submission. 
+      CODE_STATE: 
+      1. app/utils.py: calculate_ratio function MODIFIED.
+      2. tests/test_utils.py: test_calculate_ratio_zero_denominator ADDED. 
+      TESTS:
+      1. tests/test_utils.py::test_calculate_ratio_zero_denominator: PASSED (previously FAILED).
+      2. All tests in tests/test_utils.py: PASSED. 
+      CHANGES:
+      1. app/utils.py: calculate_ratio(): Added conditional if denominator == 0: return 0.
+      2. tests/test_utils.py: Added test_calculate_ratio_zero_denominator to assert behavior with zero denominator. 
+      DEPS: None modified.
+  agentdiet:
+    start_step: 10
+    a: 8
+    b: 6
+    target_min_chars: 2000
+    min_gain_ratio: 0.35
+    max_window_chars: 20000
+  obs_masking:
+    min_age_steps: 60
+    observation_char_threshold: 2000
+    max_masks_per_query: 4
+    placeholder_template: "Tool call result is ommitted."
 
 environment:
   cwd: "/app"
