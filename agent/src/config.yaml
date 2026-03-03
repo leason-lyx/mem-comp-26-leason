@@ -105,7 +105,7 @@ agent:
   cost_limit: 0
 
 compression:
-  mode: "summary"
+  mode: "obsmasking"
   compressor_model_name: null
   timeout_s: 45
   summary:
@@ -154,15 +154,15 @@ compression:
       2. tests/test_utils.py: Added test_calculate_ratio_zero_denominator to assert behavior with zero denominator. 
       DEPS: None modified.
   agentdiet:
-    start_step: 10
-    a: 8
-    b: 6
-    target_min_chars: 2000
-    min_gain_ratio: 0.35
-    max_window_chars: 20000
-  obs_masking:
-    min_age_steps: 60
-    observation_char_threshold: 2000
+    n_ctx_before: 2
+    n_ctx_after: 1
+    show_ctx: true
+    bypass_filter: false
+    min_char_reduction: 400
+    max_char_ratio: 0.70
+  obsmasking:
+    min_age_steps: 20
+    observation_char_threshold: 20000
     max_masks_per_query: 4
     placeholder_template: "Tool call result is ommitted."
 

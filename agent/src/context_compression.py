@@ -1,5 +1,4 @@
 import json
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
@@ -8,8 +7,27 @@ from litellm import completion as litellm_completion
 from pydantic import BaseModel, Field
 
 CONTEXT_SUMMARY_MARKER = "[CONTEXT_SUMMARY]"
-AGENTDIET_MARKER = "[AGENTDIET]"
-OBS_MASKED_MARKER = "[OBS_MASKED]"
+AGENTDIET_MARKER = "[Compressed with AgentDiet]"
+OBS_MASKED_MARKER = "[Result Ommited]"
+AGENTDIET_SYSTEM_PROMPT = """You will analyze and compress a given step in a trajectory of an AI agent solving a software bug.
+
+In the trajectory, each step is marked in <step id="..."></step>.
+The agent will think in <think>, call external tools as marked in <call tool="..."></call>. Its result is marked in <result></result> within the <step> tag.
+
+Your job is to compress the text within the given id to avoid harming efficiency, typically shortening it to 20%-50% of the original length.
+Meanwhile, keep the compressed text useful such that you are able to continue the trajectory as close as the original path.
+
+- You should ONLY remove redundant texts, which are either irrelevant to future steps or duplicated by other texts in the trajectory.
+- Replace the text to remove to "..." and a short takeaway, e.g. "... (same as the content below)".
+- You should keep the original structure unchanged, e.g., XML tags, Python indentation and line numbers.
+- Again, keep useful details in the original content unchanged, e.g., XML tags, Python indentation and line numbers.
+
+Typical examples:
+- If the step opens a huge file but only one part is necessary for future steps, replace other parts to "... (unrelated function XXX, YYY)".
+- If the step runs a verbose test script and everything goes fine, replace the verbose part to "... (expected output)".
+- If the step uses str_replace_editor to modify a file and the content can be inferred by the content after it, replace the tool call argument to "... (see results below)".
+
+You should only process the text within the <step> tag with the given id. STOP OUTPUT IMMEDIATELY AFTER </step>."""
 
 
 class SummaryCompressionConfig(BaseModel):
@@ -60,12 +78,12 @@ DEPS: None modified.
 
 
 class AgentDietCompressionConfig(BaseModel):
-    start_step: int = 10
-    a: int = 8
-    b: int = 6
-    target_min_chars: int = 2000
-    min_gain_ratio: float = 0.35
-    max_window_chars: int = 20000
+    n_ctx_before: int = 2
+    n_ctx_after: int = 1
+    show_ctx: bool = True
+    bypass_filter: bool = False
+    min_char_reduction: int = 400
+    max_char_ratio: float = 0.80
 
 
 class ObsMaskingCompressionConfig(BaseModel):
@@ -75,7 +93,7 @@ class ObsMaskingCompressionConfig(BaseModel):
     placeholder_template: str = "[OBS_MASKED] omitted."
 
 
-CompressionMode = Literal["off", "summary", "agentdiet", "obs_masking"]
+CompressionMode = Literal["off", "summary", "agentdiet", "obsmasking"]
 
 
 class CompressionConfig(BaseModel):
@@ -86,7 +104,7 @@ class CompressionConfig(BaseModel):
     agentdiet: AgentDietCompressionConfig = Field(
         default_factory=AgentDietCompressionConfig
     )
-    obs_masking: ObsMaskingCompressionConfig = Field(
+    obsmasking: ObsMaskingCompressionConfig = Field(
         default_factory=ObsMaskingCompressionConfig
     )
 
@@ -117,13 +135,6 @@ def safe_content_to_str(content: Any) -> str:
         return json.dumps(content, ensure_ascii=False)
     except Exception:
         return str(content)
-
-
-def _truncate_middle(text: str, max_len: int, head_len: int, tail_len: int) -> str:
-    if len(text) <= max_len:
-        return text
-    clipped = max(0, len(text) - head_len - tail_len)
-    return text[:head_len] + f"\n...[{clipped} chars truncated]...\n" + text[-tail_len:]
 
 
 def estimate_message_chars(message: dict[str, Any]) -> int:
@@ -228,8 +239,8 @@ class ContextCompressor:
                 executed, reason = self._apply_agentdiet(
                     messages=messages, current_step=current_step, task=task
                 )
-            elif mode == "obs_masking":
-                executed, reason = self._apply_obs_masking(
+            elif mode == "obsmasking":
+                executed, reason = self._apply_obsmasking(
                     messages=messages, current_step=current_step
                 )
             else:
@@ -250,30 +261,35 @@ class ContextCompressor:
     def call_compression_llm(
         self,
         *,
-        system_prompt: str,
-        user_prompt: str,
-    ) -> str:
+        messages: list[dict[str, Any]],
+    ) -> tuple[str, str]:
+        response = self._call_compression_completion(messages=messages)
+        content = self._extract_response_content(response).strip()
+        finish_reason = self._extract_finish_reason(response)
+        return content, finish_reason
+
+    def _call_compression_completion(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+    ) -> Any:
         model_name = self.config.compressor_model_name or self.default_model_name
         if not model_name or not self.api_base or not self.api_key:
-            return ""
+            return None
 
-        response = litellm_completion(
+        return litellm_completion(
             model=model_name,
             api_base=self.api_base,
             api_key=self.api_key,
             timeout=self.config.timeout_s,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=messages,
             drop_params=True,
         )
-        content = self._extract_response_content(response)
-        # content = self._strip_code_fence(content).strip()
-        return content.strip()
 
     @staticmethod
     def _extract_response_content(response: Any) -> str:
+        if response is None:
+            return ""
         choices = getattr(response, "choices", None)
         if choices is None and isinstance(response, dict):
             choices = response.get("choices")
@@ -294,55 +310,86 @@ class ContextCompressor:
             return content
         return json.dumps(content, ensure_ascii=False)
 
-    # @staticmethod
-    # def _strip_code_fence(text: str) -> str:
-    #     match = re.search(r"```(?:[a-zA-Z0-9_-]+)?\s*(.*?)```", text, re.DOTALL)
-    #     if match:
-    #         return match.group(1)
-    #     return text
+    @staticmethod
+    def _extract_finish_reason(response: Any) -> str:
+        if response is None:
+            return ""
+        choices = getattr(response, "choices", None)
+        if choices is None and isinstance(response, dict):
+            choices = response.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+
+        first = choices[0]
+        if isinstance(first, dict):
+            finish_reason = first.get("finish_reason")
+        else:
+            finish_reason = getattr(first, "finish_reason", "")
+        return finish_reason or ""
 
     @staticmethod
-    def _compact_messages_for_prompt(
-        messages: list[dict[str, Any]],
+    def _message_extra(message: dict[str, Any]) -> dict[str, Any]:
+        extra = message.get("extra", {})
+        if isinstance(extra, dict):
+            return extra
+        return {}
+
+    def _assistant_has_agentdiet_compression(self, message: dict[str, Any]) -> bool:
+        extra = self._message_extra(message)
+        compression_meta = extra.get("compression_meta")
+        if (
+            isinstance(compression_meta, dict)
+            and compression_meta.get("type") == "agentdiet"
+            and isinstance(compression_meta.get("compressed_step_xml"), str)
+        ):
+            return True
+        content = safe_content_to_str(message.get("content", ""))
+        return AGENTDIET_MARKER in content
+
+    def _render_step_xml(
+        self,
         *,
-        max_chars: int | None = None,
-        content_limit: int = 1400,
-    ) -> list[dict[str, Any]]:
-        compact: list[dict[str, Any]] = []
-        total_chars = 0
-        for message in messages:
-            role = str(message.get("role", ""))
-            content = _truncate_middle(
-                safe_content_to_str(message.get("content", "")),
-                max_len=content_limit,
-                head_len=min(900, content_limit),
-                tail_len=min(400, content_limit),
-            )
-            item: dict[str, Any] = {"role": role, "content": content}
+        messages: list[dict[str, Any]],
+        step_slice: StepSlice,
+    ) -> str:
+        assistant_message = messages[step_slice.start_idx]
+        compression_meta = self._message_extra(assistant_message).get(
+            "compression_meta"
+        )
+        if (
+            isinstance(compression_meta, dict)
+            and compression_meta.get("type") == "agentdiet"
+            and isinstance(compression_meta.get("compressed_step_xml"), str)
+        ):
+            return compression_meta["compressed_step_xml"]
 
-            extra = message.get("extra", {})
-            if isinstance(extra, dict):
-                if role == "assistant":
-                    actions = extra.get("actions", [])
-                    if isinstance(actions, list):
-                        commands = []
-                        for action in actions:
-                            if not isinstance(action, dict):
-                                continue
-                            command = str(action.get("command", "")).strip()
-                            if command:
-                                commands.append(command[:300])
-                        if commands:
-                            item["actions"] = commands[:6]
-                if role == "tool":
-                    item["returncode"] = extra.get("returncode")
+        parts = [f'<step id="{step_slice.step_index}">']
+        think_text = safe_content_to_str(assistant_message.get("content", ""))
+        parts.append(f"<think>{think_text}</think>")
 
-            encoded = json.dumps(item, ensure_ascii=False)
-            if max_chars is not None and total_chars + len(encoded) > max_chars:
-                break
-            compact.append(item)
-            total_chars += len(encoded)
-        return compact
+        actions = self._message_extra(assistant_message).get("actions", [])
+        action_texts: list[str] = []
+        if isinstance(actions, list):
+            for action in actions:
+                if isinstance(action, dict) and "command" in action:
+                    action_texts.append(safe_content_to_str(action.get("command")))
+                else:
+                    action_texts.append(safe_content_to_str(action))
+
+        result_texts = [
+            safe_content_to_str(messages[idx].get("content", ""))
+            for idx in step_slice.observation_indices
+        ]
+
+        item_count = max(len(action_texts), len(result_texts))
+        for idx in range(item_count):
+            if idx < len(action_texts):
+                parts.append(f'<call tool="bash">{action_texts[idx]}</call>')
+            if idx < len(result_texts):
+                parts.append(f"<result>{result_texts[idx]}</result>")
+
+        parts.append("</step>")
+        return "\n".join(parts)
 
     def _apply_summary(
         self,
@@ -376,20 +423,18 @@ class ContextCompressor:
         if len(target_messages) == 1 and already_compressed_marker(target_messages[0]):
             return False, "already_summary_marker"
 
-        compact = self._compact_messages_for_prompt(target_messages)
-        if not compact:
-            return False, "empty_compact_messages"
-
         system_prompt = cfg.summary_prompt
         user_prompt = (
             f"Task:\n{task[:4000]}\n\n"
             "Old history to compress (JSON):\n"
-            f"{json.dumps(compact, ensure_ascii=False)}\n\n"
+            f"{json.dumps(target_messages, ensure_ascii=False, default=str)}\n\n"
             "Write one concise summary for future steps."
         )
-        summary_text = self.call_compression_llm(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
+        summary_text, _ = self.call_compression_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
         )
         if not summary_text:
             return False, "llm_empty_or_unavailable"
@@ -430,114 +475,116 @@ class ContextCompressor:
         task: str,
     ) -> tuple[bool, str]:
         cfg = self.config.agentdiet
-        if current_step < cfg.start_step:
-            return False, "before_start_step"
-
         steps = extract_step_slices(messages)
         if not steps:
             return False, "no_steps_found"
 
-        target_step = current_step - cfg.a
+        target_step = len(steps) - 1 - cfg.n_ctx_after
         if target_step < 0:
-            return False, "negative_target_step"
-        if target_step >= len(steps):
             return False, "target_step_unavailable"
+        if target_step - cfg.n_ctx_before < 0:
+            return False, "insufficient_context_before"
+        if target_step + cfg.n_ctx_after >= len(steps):
+            return False, "insufficient_context_after"
 
         target_slice = steps[target_step]
-        target_obs_indices = target_slice.observation_indices
-        if not target_obs_indices:
-            return False, "target_step_has_no_observation"
-
-        if any(already_compressed_marker(messages[idx]) for idx in target_obs_indices):
+        assistant_message = messages[target_slice.start_idx]
+        if self._assistant_has_agentdiet_compression(assistant_message):
             return False, "target_already_compressed"
 
-        target_chars = sum(
-            estimate_message_chars(messages[idx]) for idx in target_obs_indices
-        )
-        if target_chars < cfg.target_min_chars:
-            return False, "target_too_short"
+        traj_content = [
+            self._render_step_xml(messages=messages, step_slice=steps[idx])
+            for idx in range(
+                target_step - cfg.n_ctx_before,
+                target_step + cfg.n_ctx_after + 1,
+            )
+        ]
+        if not cfg.show_ctx:
+            for idx in range(len(traj_content)):
+                if idx != cfg.n_ctx_before:
+                    traj_content[idx] = ""
 
-        latest_window_step = min(len(steps) - 1, max(0, current_step - 1))
-        window_start_step = max(0, target_step - cfg.b)
-        window_slices = steps[window_start_step : latest_window_step + 1]
-        if not window_slices:
-            return False, "empty_window"
+        system_prompt = AGENTDIET_SYSTEM_PROMPT
+        if cfg.bypass_filter:
+            system_prompt = system_prompt.replace("think", "talk")
+            system_prompt = system_prompt.replace("agent", "engineer")
 
-        window_messages: list[dict[str, Any]] = []
-        for step_slice in window_slices:
-            window_messages.extend(messages[step_slice.start_idx : step_slice.end_idx])
-
-        compact_window = self._compact_messages_for_prompt(
-            window_messages, max_chars=cfg.max_window_chars
-        )
-        if not compact_window:
-            return False, "empty_window_after_compact"
-
-        target_observations = [messages[idx] for idx in target_obs_indices]
-        compact_target = self._compact_messages_for_prompt(
-            target_observations, max_chars=min(cfg.max_window_chars, 8000)
-        )
-
-        system_prompt = (
-            "You compress one historical tool-observation step in an agent trajectory. "
-            "Keep only details that are useful for future debugging and decision making. "
-            "Return plain text only."
-        )
+        original_step_xml = traj_content[cfg.n_ctx_before]
         user_prompt = (
-            f"Task:\n{task[:3000]}\n\n"
-            f"Current step s={current_step}, target step t={target_step}.\n"
-            "Local window JSON:\n"
-            f"{json.dumps(compact_window, ensure_ascii=False)}\n\n"
-            "Target step observations JSON:\n"
-            f"{json.dumps(compact_target, ensure_ascii=False)}\n\n"
-            "Return a concise replacement summary for target observations."
+            "\n".join(traj_content) + f"\n\nNow, compress the step {target_step}."
         )
-        compressed_text = self.call_compression_llm(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
+        compressed_text, finish_reason = self.call_compression_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Sure. Here is the compressed content of step "
+                        f'{target_step}: <step id="{target_step}">'
+                    ),
+                },
+            ]
         )
         if not compressed_text:
             return False, "llm_empty_or_unavailable"
 
-        gain_ratio = (target_chars - len(compressed_text)) / max(1, target_chars)
-        if gain_ratio < cfg.min_gain_ratio:
-            return False, "gain_ratio_too_low"
+        content, splitter, _ = compressed_text.partition("</step>")
+        if not splitter and finish_reason != "stop":
+            return False, "invalid_completion"
 
-        first_obs_idx = target_obs_indices[0]
-        first_obs = dict(messages[first_obs_idx])
-        first_extra = (
-            dict(first_obs.get("extra", {}))
-            if isinstance(first_obs.get("extra"), dict)
-            else {}
-        )
-        first_extra["compression_meta"] = {
+        if "<step" in content[:200]:
+            content = content.partition("<step")[2]
+            if ">" in content[:20]:
+                content = content.partition(">")[2]
+
+        compressed_inner = content
+        old_chars = len(original_step_xml)
+        new_chars = len(compressed_inner)
+        if not (
+            old_chars - new_chars >= cfg.min_char_reduction
+            or new_chars < cfg.max_char_ratio * old_chars
+        ):
+            return False, "no_erase"
+
+        compressed_step_xml = f'<step id="{target_step}">{compressed_inner}</step>'
+        compress_ratio = new_chars / max(1, old_chars)
+
+        updated_assistant = dict(assistant_message)
+        assistant_extra = dict(self._message_extra(updated_assistant))
+        assistant_extra["compression_meta"] = {
             "type": "agentdiet",
             "step": target_step,
-            "original_chars": target_chars,
-            "gain_ratio": gain_ratio,
+            "original_chars": old_chars,
+            "compressed_chars": new_chars,
+            "compress_ratio": compress_ratio,
+            "compressed_step_xml": compressed_step_xml,
             "timestamp": time.time(),
         }
-        first_obs["content"] = (
-            f"{AGENTDIET_MARKER} step={target_step}\n{compressed_text.strip()}"
+        print(
+            f"[compression] agentdiet applied at step={current_step} target_step={target_step} "
+            f"original_chars={old_chars} compressed_chars={new_chars} "
+            f"compress_ratio={compress_ratio:.2f}"
         )
-        first_obs["extra"] = first_extra
-        messages[first_obs_idx] = first_obs
+        updated_assistant["content"] = (
+            f"{AGENTDIET_MARKER} step={target_step}\n{compressed_step_xml}"
+        )
+        updated_assistant["extra"] = assistant_extra
+        messages[target_slice.start_idx] = updated_assistant
 
-        for idx in target_obs_indices[1:]:
+        for idx in target_slice.observation_indices:
             msg = dict(messages[idx])
-            extra = (
-                dict(msg.get("extra", {})) if isinstance(msg.get("extra"), dict) else {}
-            )
+            extra = dict(self._message_extra(msg))
             returncode = extra.get("returncode", "unknown")
             msg["content"] = (
                 f"{AGENTDIET_MARKER} step={target_step} "
-                "additional tool output compressed into first observation; "
+                "compressed into assistant step payload; "
                 f"returncode={returncode}"
             )
             extra["compression_meta"] = {
                 "type": "agentdiet_placeholder",
                 "step": target_step,
-                "collapsed_to": first_obs_idx,
+                "collapsed_to": target_slice.start_idx,
                 "timestamp": time.time(),
             }
             msg["extra"] = extra
@@ -545,13 +592,13 @@ class ContextCompressor:
 
         return True, f"agentdiet_step_{target_step}"
 
-    def _apply_obs_masking(
+    def _apply_obsmasking(
         self,
         *,
         messages: list[dict[str, Any]],
         current_step: int,
     ) -> tuple[bool, str]:
-        cfg = self.config.obs_masking
+        cfg = self.config.obsmasking
         steps = extract_step_slices(messages)
         if not steps:
             return False, "no_steps_found"
@@ -587,14 +634,14 @@ class ContextCompressor:
             placeholder = cfg.placeholder_template
             msg["content"] = placeholder
             extra["compression_meta"] = {
-                "type": "obs_masking",
+                "type": "obsmasking",
                 "step": step_idx,
                 "original_chars": original_chars,
                 "age_steps": age_steps,
                 "timestamp": time.time(),
             }
             print(
-                f"[compression] obs_masking step={step_idx} age={age_steps} chars={original_chars} returncode={returncode}"
+                f"[compression] obsmasking step={step_idx} age={age_steps} chars={original_chars} returncode={returncode}"
             )
             msg["extra"] = extra
             messages[idx] = msg
