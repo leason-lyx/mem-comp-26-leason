@@ -68,8 +68,8 @@ class MemoryAgent:
             active_compression_config = compression_cfg.summary.model_dump()
         elif compression_cfg.mode == "agentdiet":
             active_compression_config = compression_cfg.agentdiet.model_dump()
-        elif compression_cfg.mode == "obs_masking":
-            active_compression_config = compression_cfg.obs_masking.model_dump()
+        elif compression_cfg.mode == "obsmasking":
+            active_compression_config = compression_cfg.obsmasking.model_dump()
         print(
             "[compression] startup "
             f"mode={compression_cfg.mode} "
