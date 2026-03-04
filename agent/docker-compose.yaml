@@ -6,7 +6,7 @@ services:
     agent:
         restart: no
         build: .
-        image: minisweagent-external-mem-obsmasking # the agent will be built with this image name
+        image: minisweagent-external-mem-agentdiet # the agent will be built with this image name
         networks:
             - infra
         environment:
