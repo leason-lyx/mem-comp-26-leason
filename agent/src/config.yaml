@@ -105,7 +105,7 @@ agent:
   cost_limit: 0
 
 compression:
-  mode: "obsmasking"
+  mode: "agentdiet"
   compressor_model_name: null
   timeout_s: 45
   summary:
@@ -157,11 +157,10 @@ compression:
     n_ctx_before: 2
     n_ctx_after: 1
     show_ctx: true
-    bypass_filter: false
-    min_char_reduction: 400
-    max_char_ratio: 0.70
+    step_char_threshold: 10000
+    min_char_reduction: 5000
   obsmasking:
-    min_age_steps: 20
+    min_age_steps: 10
     observation_char_threshold: 20000
     max_masks_per_query: 4
     placeholder_template: "Tool call result is ommitted."

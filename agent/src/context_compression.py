@@ -81,9 +81,8 @@ class AgentDietCompressionConfig(BaseModel):
     n_ctx_before: int = 2
     n_ctx_after: int = 1
     show_ctx: bool = True
-    bypass_filter: bool = False
+    step_char_threshold: int = 10000
     min_char_reduction: int = 400
-    max_char_ratio: float = 0.80
 
 
 class ObsMaskingCompressionConfig(BaseModel):
@@ -492,24 +491,36 @@ class ContextCompressor:
         if self._assistant_has_agentdiet_compression(assistant_message):
             return False, "target_already_compressed"
 
-        traj_content = [
-            self._render_step_xml(messages=messages, step_slice=steps[idx])
-            for idx in range(
-                target_step - cfg.n_ctx_before,
-                target_step + cfg.n_ctx_after + 1,
+        original_step_xml = self._render_step_xml(
+            messages=messages, step_slice=target_slice
+        )
+        old_chars = len(original_step_xml)
+        if old_chars < cfg.step_char_threshold:
+            print(
+                f"[compression] agentdiet skipped at step={current_step} "
+                f"target_step={target_step} original_chars={old_chars} "
+                f"threshold={cfg.step_char_threshold} reason=below_step_threshold"
             )
-        ]
+            return False, "below_step_threshold"
+
+        traj_content: list[str] = []
+        for idx in range(
+            target_step - cfg.n_ctx_before,
+            target_step + cfg.n_ctx_after + 1,
+        ):
+            if idx == target_step:
+                traj_content.append(original_step_xml)
+            else:
+                traj_content.append(
+                    self._render_step_xml(messages=messages, step_slice=steps[idx])
+                )
         if not cfg.show_ctx:
             for idx in range(len(traj_content)):
                 if idx != cfg.n_ctx_before:
                     traj_content[idx] = ""
 
         system_prompt = AGENTDIET_SYSTEM_PROMPT
-        if cfg.bypass_filter:
-            system_prompt = system_prompt.replace("think", "talk")
-            system_prompt = system_prompt.replace("agent", "engineer")
 
-        original_step_xml = traj_content[cfg.n_ctx_before]
         user_prompt = (
             "\n".join(traj_content) + f"\n\nNow, compress the step {target_step}."
         )
@@ -539,12 +550,8 @@ class ContextCompressor:
                 content = content.partition(">")[2]
 
         compressed_inner = content
-        old_chars = len(original_step_xml)
         new_chars = len(compressed_inner)
-        if not (
-            old_chars - new_chars >= cfg.min_char_reduction
-            or new_chars < cfg.max_char_ratio * old_chars
-        ):
+        if old_chars - new_chars <= cfg.min_char_reduction:
             return False, "no_erase"
 
         compressed_step_xml = f'<step id="{target_step}">{compressed_inner}</step>'
