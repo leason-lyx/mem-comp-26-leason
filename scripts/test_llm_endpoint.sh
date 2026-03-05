@@ -3,9 +3,13 @@ set -euo pipefail
 
 # Quick health check llm endpoint + tool/parallel_tool_calls capability probe.
 
-BASE_URL=${QWEN_BASE_URL:-"http://100.124.83.129:46400/v1"}
-API_KEY=${QWEN_API_KEY:-"api_key"}
-MODEL=${QWEN_MODEL:-"Qwen3-Coder-Next"}
+# BASE_URL=${QWEN_BASE_URL:-"http://100.124.83.129:46400/v1"}
+# API_KEY=${QWEN_API_KEY:-"api_key"}
+# MODEL=${QWEN_MODEL:-"Qwen3-Coder-Next"}
+
+BASE_URL=${QWEN_BASE_URL:-"https://api2.aigcbest.top/v1"}
+API_KEY=${QWEN_API_KEY:-"sk-ormlBzyQ1Pg8SO1aretuHMrIRgVWDKZGEP08nTv6hQgDptqO"}
+MODEL=${QWEN_MODEL:-"DeepSeek-V3.2"}
 
 echo "POST ${BASE_URL}/chat/completions with model=${MODEL}"
 

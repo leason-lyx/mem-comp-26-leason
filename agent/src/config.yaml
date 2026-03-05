@@ -105,7 +105,7 @@ agent:
   cost_limit: 0
 
 compression:
-  mode: "agentdiet"
+  mode: "off"
   compressor_model_name: null
   timeout_s: 45
   summary:
@@ -176,7 +176,7 @@ environment:
     TQDM_DISABLE: '1'
 
 model:
-  model_name: "litellm_proxy/Qwen3-Coder-Next"
+  model_name: "litellm_proxy/deepseek-v3.2"
   model_kwargs:
     drop_params: true
     parallel_tool_calls: true
