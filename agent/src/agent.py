@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from jinja2 import StrictUndefined, Template
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from minisweagent import Environment, Model, __version__
 from minisweagent.agents.default import AgentConfig
@@ -15,12 +15,18 @@ from minisweagent.exceptions import InterruptAgentFlow, LimitsExceeded  # type: 
 from minisweagent.utils.serialize import recursive_merge
 
 from context_compression import CompressionConfig, ContextCompressor
-from memory_store import MEMORY_FIELDS, MemoryStore
+from memory_store import DEFAULT_MEMORY_FIELDS, MemoryStore
 from memory_summarizer import MemorySummarizer
+
+
+class MemoryFieldConfig(BaseModel):
+    fields: list[str] = Field(default_factory=lambda: list(DEFAULT_MEMORY_FIELDS))
+    field_descriptions: dict[str, str] | None = None
 
 
 class MemoryAgentConfig(AgentConfig):
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
+    memory: MemoryFieldConfig = Field(default_factory=MemoryFieldConfig)
 
 
 class MemoryAgent:
@@ -44,7 +50,23 @@ class MemoryAgent:
 
         self.memory_dir = Path(memory_path)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self.memory_store = MemoryStore(self.memory_dir / "memory.db")
+        memory_cfg = getattr(self.config, "memory", MemoryFieldConfig())
+        if not isinstance(memory_cfg, MemoryFieldConfig):
+            memory_cfg = MemoryFieldConfig.model_validate(memory_cfg)
+
+        selected_fields = memory_cfg.fields or list(DEFAULT_MEMORY_FIELDS)
+        self.memory_fields = tuple(str(field) for field in selected_fields)
+        raw_field_descriptions = memory_cfg.field_descriptions or {}
+        self.field_descriptions = {
+            str(key): str(value)
+            for key, value in raw_field_descriptions.items()
+            if value is not None
+        }
+
+        self.memory_store = MemoryStore(
+            self.memory_dir / "memory.db",
+            fields=list(self.memory_fields),
+        )
 
         model_config = getattr(self.model, "config", None)
         model_kwargs = getattr(model_config, "model_kwargs", {}) or {}
@@ -52,6 +74,8 @@ class MemoryAgent:
             api_base=str(model_kwargs.get("api_base", "")),
             api_key=str(model_kwargs.get("api_key", "")),
             model_name=str(getattr(model_config, "model_name", "")),
+            fields=list(self.memory_fields),
+            field_descriptions=self.field_descriptions,
         )
         compression_cfg = getattr(self.config, "compression", CompressionConfig())
         if not isinstance(compression_cfg, CompressionConfig):
@@ -75,6 +99,15 @@ class MemoryAgent:
             f"mode={compression_cfg.mode} "
             f"config={json.dumps(active_compression_config, ensure_ascii=False)}"
         )
+        print(
+            "[memory] startup "
+            f"fields={json.dumps(list(self.memory_fields), ensure_ascii=False)}"
+        )
+        if self.field_descriptions:
+            print(
+                "[memory] field_descriptions "
+                f"fields={json.dumps(sorted(self.field_descriptions.keys()), ensure_ascii=False)}"
+            )
 
         self.initial_top_k = 25
         # Runtime memory injection is currently disabled.
@@ -191,7 +224,7 @@ class MemoryAgent:
         ]
         for idx, record in enumerate(records, start=1):
             lines.append(f"[Memory #{idx} | id={record.get('id')}]")
-            for field in MEMORY_FIELDS:
+            for field in self.memory_fields:
                 value = self._compact_text(str(record.get(field, "")))
                 if value:
                     lines.append(f"- {field}: {value}")
@@ -211,7 +244,7 @@ class MemoryAgent:
                 f"[memory]   #{idx} id={record.get('id')} "
                 f"overlap={record.get('overlap', '?')} bm25={record.get('bm25', '?')}"
             )
-            for field in MEMORY_FIELDS:
+            for field in self.memory_fields:
                 value = str(record.get(field, "")).strip()
                 if value:
                     print(
@@ -361,7 +394,7 @@ class MemoryAgent:
             "summary_version": self.memory_summarizer.summary_version,
             **summary,
         }
-        for field in MEMORY_FIELDS:
+        for field in self.memory_fields:
             record.setdefault(field, "")
 
         memory_id = self.memory_store.insert_memory(record)
@@ -371,7 +404,7 @@ class MemoryAgent:
             f"exit_status={record.get('exit_status', '')} "
             f"task_hash={record.get('task_hash', '')}"
         )
-        for field in MEMORY_FIELDS:
+        for field in self.memory_fields:
             value = str(record.get(field, "")).strip()
             if value:
                 print(f"[memory]   {field}: {self._compact_text(value, limit=280)}")

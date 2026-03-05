@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql import func, literal_column, table, column
 
 
-MEMORY_FIELDS = [
+DEFAULT_MEMORY_FIELDS = [
     "issue_description",
     "keywords",
     "root_cause",
@@ -19,6 +19,7 @@ MEMORY_FIELDS = [
     "commands",
     "notes",
 ]
+MEMORY_FIELDS = list(DEFAULT_MEMORY_FIELDS)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -35,9 +36,17 @@ def _tokenize(text: str) -> list[str]:
 
 
 class MemoryStore:
-    def __init__(self, db_path: str | Path):
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        fields: list[str] | None = None,
+    ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        selected_fields = fields or list(DEFAULT_MEMORY_FIELDS)
+        self.fields = tuple(str(field) for field in selected_fields)
+        self.retrieval_fields = self.fields
         self.engine: Engine = create_engine(
             f"sqlite+pysqlite:///{self.db_path}", future=True
         )
@@ -50,129 +59,74 @@ class MemoryStore:
             Column("exit_status", Text, nullable=False),
             Column("task_hash", Text, nullable=False),
             Column("summary_version", Text, nullable=False),
-            *(Column(field, Text, nullable=False, server_default="") for field in MEMORY_FIELDS),
+            *(Column(field, Text, nullable=False, server_default="") for field in self.fields),
         )
         self.memories_fts = table(
             "memories_fts",
             column("rowid"),
-            *(column(field) for field in MEMORY_FIELDS),
+            *(column(field) for field in self.retrieval_fields),
         )
         self.init_db()
 
     def init_db(self) -> None:
-        fts_sql = """
+        field_lines = ",\n            ".join(self.retrieval_fields)
+        fts_sql = f"""
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-            issue_description,
-            keywords,
-            root_cause,
-            decisions,
-            insights,
-            related_paths,
-            commands,
-            notes,
+            {field_lines},
             content='memories',
             content_rowid='id'
         )
         """
+        trigger_fields = ",\n                    ".join(self.retrieval_fields)
+        trigger_new_values = ",\n                    ".join(
+            f"new.{field}" for field in self.retrieval_fields
+        )
+        trigger_old_values = ",\n                    ".join(
+            f"old.{field}" for field in self.retrieval_fields
+        )
         trigger_sql = [
-            """
+            f"""
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
                 INSERT INTO memories_fts(
                     rowid,
-                    issue_description,
-                    keywords,
-                    root_cause,
-                    decisions,
-                    insights,
-                    related_paths,
-                    commands,
-                    notes
+                    {trigger_fields}
                 ) VALUES (
                     new.id,
-                    new.issue_description,
-                    new.keywords,
-                    new.root_cause,
-                    new.decisions,
-                    new.insights,
-                    new.related_paths,
-                    new.commands,
-                    new.notes
+                    {trigger_new_values}
                 );
             END
             """,
-            """
+            f"""
             CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
                 INSERT INTO memories_fts(
                     memories_fts,
                     rowid,
-                    issue_description,
-                    keywords,
-                    root_cause,
-                    decisions,
-                    insights,
-                    related_paths,
-                    commands,
-                    notes
+                    {trigger_fields}
                 ) VALUES (
                     'delete',
                     old.id,
-                    old.issue_description,
-                    old.keywords,
-                    old.root_cause,
-                    old.decisions,
-                    old.insights,
-                    old.related_paths,
-                    old.commands,
-                    old.notes
+                    {trigger_old_values}
                 );
             END
             """,
-            """
+            f"""
             CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
                 INSERT INTO memories_fts(
                     memories_fts,
                     rowid,
-                    issue_description,
-                    keywords,
-                    root_cause,
-                    decisions,
-                    insights,
-                    related_paths,
-                    commands,
-                    notes
+                    {trigger_fields}
                 ) VALUES (
                     'delete',
                     old.id,
-                    old.issue_description,
-                    old.keywords,
-                    old.root_cause,
-                    old.decisions,
-                    old.insights,
-                    old.related_paths,
-                    old.commands,
-                    old.notes
+                    {trigger_old_values}
                 );
 
                 INSERT INTO memories_fts(
                     rowid,
-                    issue_description,
-                    keywords,
-                    root_cause,
-                    decisions,
-                    insights,
-                    related_paths,
-                    commands,
-                    notes
+                    {trigger_fields}
                 ) VALUES (
                     new.id,
-                    new.issue_description,
-                    new.keywords,
-                    new.root_cause,
-                    new.decisions,
-                    new.insights,
-                    new.related_paths,
-                    new.commands,
-                    new.notes
+                    {trigger_new_values}
                 );
             END
             """,
@@ -188,8 +142,43 @@ class MemoryStore:
                         "SQLite FTS5 is unavailable. Please use a Python build with FTS5 enabled."
                     ) from exc
                 raise
+            self._validate_schema(conn)
+            conn.execute(text("DROP TRIGGER IF EXISTS memories_ai"))
+            conn.execute(text("DROP TRIGGER IF EXISTS memories_ad"))
+            conn.execute(text("DROP TRIGGER IF EXISTS memories_au"))
             for ddl in trigger_sql:
                 conn.execute(text(ddl))
+
+    def _validate_schema(self, conn) -> None:
+        memory_columns = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(memories)")).fetchall()
+        }
+        required_memory_columns = {
+            "id",
+            "created_at",
+            "exit_status",
+            "task_hash",
+            "summary_version",
+            *self.fields,
+        }
+        missing_memory_columns = sorted(required_memory_columns - memory_columns)
+        if missing_memory_columns:
+            raise RuntimeError(
+                "memory.db schema mismatch for table 'memories'. Missing columns: "
+                + ", ".join(missing_memory_columns)
+                + ". Use a fresh --memory-path when changing memory fields."
+            )
+
+        fts_columns = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(memories_fts)")).fetchall()
+        }
+        missing_fts_columns = sorted(set(self.retrieval_fields) - fts_columns)
+        if missing_fts_columns:
+            raise RuntimeError(
+                "memory.db schema mismatch for table 'memories_fts'. Missing columns: "
+                + ", ".join(missing_fts_columns)
+                + ". Use a fresh --memory-path when changing retrieval_fields."
+            )
 
     def insert_memory(self, record: dict[str, Any]) -> int:
         columns = [
@@ -197,7 +186,7 @@ class MemoryStore:
             "exit_status",
             "task_hash",
             "summary_version",
-            *MEMORY_FIELDS,
+            *self.fields,
         ]
         values = {col: str(record.get(col, "")) for col in columns}
         stmt = insert(self.memories).values(values)
@@ -238,7 +227,7 @@ class MemoryStore:
         enriched: list[dict[str, Any]] = []
         for row in rows:
             row_dict = dict(row)
-            corpus = "\n".join(str(row_dict.get(f, "")) for f in MEMORY_FIELDS)
+            corpus = "\n".join(str(row_dict.get(f, "")) for f in self.retrieval_fields)
             overlap = len(query_token_set.intersection(_tokenize(corpus)))
             row_dict["overlap"] = overlap
             enriched.append(row_dict)

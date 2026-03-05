@@ -4,7 +4,7 @@ from typing import Any
 
 from litellm import completion as litellm_completion
 
-from memory_store import MEMORY_FIELDS
+from memory_store import DEFAULT_MEMORY_FIELDS
 
 
 class MemorySummarizer:
@@ -16,12 +16,33 @@ class MemorySummarizer:
         model_name: str,
         timeout: int = 45,
         summary_version: str = "v1",
+        fields: list[str] | None = None,
+        field_descriptions: dict[str, str] | None = None,
     ):
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.model_name = model_name
         self.timeout = timeout
         self.summary_version = summary_version
+        selected_fields = fields or list(DEFAULT_MEMORY_FIELDS)
+        self.fields = tuple(str(field) for field in selected_fields)
+        self.field_descriptions = {
+            str(key): str(value)
+            for key, value in (field_descriptions or {}).items()
+            if value is not None
+        }
+
+    def _build_field_guidance(self) -> str:
+        lines: list[str] = []
+        for field in self.fields:
+            description = self.field_descriptions.get(field)
+            if description:
+                lines.append(f"- {field}: {description}")
+            else:
+                lines.append(
+                    f"- {field}: Keep this concise, concrete, and supported by the trajectory."
+                )
+        return "\n".join(lines)
 
     @staticmethod
     def _truncate_middle(
@@ -108,7 +129,7 @@ class MemorySummarizer:
 
     def _normalize_record(self, raw: dict[str, Any]) -> dict[str, str]:
         record: dict[str, str] = {}
-        for field in MEMORY_FIELDS:
+        for field in self.fields:
             value = raw.get(field, "")
             if isinstance(value, (dict, list)):
                 value = json.dumps(value, ensure_ascii=False)
@@ -162,7 +183,7 @@ class MemorySummarizer:
             task.strip(), max_len=1200, head_len=800, tail_len=350
         )
 
-        return {
+        fallback_values = {
             "issue_description": task_short or "No task description captured.",
             "keywords": ", ".join(re.findall(r"[A-Za-z0-9_]+", task.lower())[:20]),
             "root_cause": "Summary model output unavailable or unparsable.",
@@ -174,6 +195,10 @@ class MemorySummarizer:
             "commands": commands_text or "No commands captured.",
             "notes": f"Fallback summary used. Reason: {reason}",
         }
+        result = {field: fallback_values.get(field, "") for field in self.fields}
+        if not any(result.values()):
+            result[self.fields[0]] = task_short or f"Fallback summary used. Reason: {reason}"
+        return result
 
     def summarize(
         self,
@@ -196,11 +221,17 @@ class MemorySummarizer:
                 reason="Missing LLM API configuration",
             )
 
+        field_guidance = self._build_field_guidance()
         system_prompt = (
             "You summarize a coding-agent trajectory into a reusable process memory. "
             "Output MUST be strict JSON object with exactly these keys: "
-            + ", ".join(MEMORY_FIELDS)
-            + ". Each value must be a concise string. No markdown, no code fences, no extra keys."
+            + ", ".join(self.fields)
+            + ". Each value must be a concise string. No markdown, no code fences, no extra keys.\n\n"
+            + "Field guidance:\n"
+            + field_guidance
+            + "\n\n"
+            + "Only write what can be supported by trajectory evidence. "
+            + "Use empty string when a field has no reliable evidence."
         )
 
         user_prompt = (
@@ -228,6 +259,6 @@ class MemorySummarizer:
 
         parsed = self._extract_json_from_content(content)
         normalized = self._normalize_record(parsed)
-        if any(normalized.get(k, "") for k in MEMORY_FIELDS):
+        if any(normalized.get(k, "") for k in self.fields):
             return normalized
         raise ValueError("Empty summary")

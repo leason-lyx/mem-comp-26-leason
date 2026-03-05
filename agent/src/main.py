@@ -63,6 +63,7 @@ def main():
         step_limit=config["agent"]["step_limit"],
         cost_limit=config["agent"]["cost_limit"],
         compression=config.get("compression", {}),
+        memory=config.get("memory", {}),
     )
     result = agent.run(task)
     agent.save_memory()

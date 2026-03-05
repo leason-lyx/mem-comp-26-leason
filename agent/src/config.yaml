@@ -104,8 +104,31 @@ agent:
   step_limit: 600
   cost_limit: 0
 
+memory:
+  # Full field set written into memory.db.
+  fields:
+    - issue_description
+    - keywords
+    - root_cause
+    - decisions
+    - insights
+    - related_paths
+    - commands
+    - notes
+  # Optional per-field guidance for memory summarization LLM.
+  # Keys not present in `fields` are ignored.
+  field_descriptions:
+    issue_description: "Problem statement with symptoms, trigger conditions, and expected behavior."
+    keywords: "Short retrieval-oriented keywords or phrases, separated by commas."
+    root_cause: "Most likely root cause; if uncertain, record validated clues only."
+    decisions: "Key implementation decisions and tradeoffs with rationale."
+    insights: "Reusable lessons, pitfalls, and effective debugging paths."
+    related_paths: "Relevant file or directory paths, prioritizing real edited paths."
+    commands: "Important shell commands for investigation, edits, and verification."
+    notes: "Extra context such as constraints, risks, and suggested follow-ups."
+
 compression:
-  mode: "off"
+  mode: "obsmasking"
   compressor_model_name: null
   timeout_s: 45
   summary:
@@ -160,8 +183,8 @@ compression:
     step_char_threshold: 10000
     min_char_reduction: 5000
   obsmasking:
-    min_age_steps: 10
-    observation_char_threshold: 20000
+    min_age_steps: 8
+    observation_char_threshold: 10000
     max_masks_per_query: 4
     placeholder_template: "Tool call result is ommitted."
 
@@ -176,7 +199,7 @@ environment:
     TQDM_DISABLE: '1'
 
 model:
-  model_name: "litellm_proxy/deepseek-v3.2"
+  model_name: "litellm_proxy/Qwen3-Coder-Next"
   model_kwargs:
     drop_params: true
     parallel_tool_calls: true
