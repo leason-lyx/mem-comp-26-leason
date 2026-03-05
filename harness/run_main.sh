@@ -94,9 +94,9 @@ sudo -E "${PYTHON_BIN}" main.py \
     --candidates-file "${CANDIDATES_FILE}"
 
 PATCH_DIR="results/${RUN_NAME}"
-echo "[run_main] start swe_bench_pro_eval.py: ${PYTHON_BIN} swe_bench_pro_eval.py --raw_sample_path external_hf_v2.csv --patch_dir ${PATCH_DIR} --dockerhub_username ${EVAL_DOCKERHUB_USERNAME} --scripts_dir run_scripts --num_workers ${EVAL_NUM_WORKERS} --docker_api_timeout ${EVAL_DOCKER_API_TIMEOUT}"
+echo "[run_main] start swe_bench_pro_eval.py: ${PYTHON_BIN} swe_bench_pro_eval.py --raw_sample_path swebench-pro.parquet --patch_dir ${PATCH_DIR} --dockerhub_username ${EVAL_DOCKERHUB_USERNAME} --scripts_dir run_scripts --num_workers ${EVAL_NUM_WORKERS} --docker_api_timeout ${EVAL_DOCKER_API_TIMEOUT}"
 "${PYTHON_BIN}" swe_bench_pro_eval.py \
-    --raw_sample_path external_hf_v2.csv \
+    --raw_sample_path swebench-pro.parquet \
     --patch_dir "${PATCH_DIR}" \
     --dockerhub_username "${EVAL_DOCKERHUB_USERNAME}" \
     --scripts_dir run_scripts \

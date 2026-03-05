@@ -63,37 +63,6 @@ DOCKER_LIMITS = {
     "environment": ["TZ=Asia/Shanghai"],
 }
 
-### BEGIN copied from sweap
-
-
-def sweap_get_docker_tag(row):
-    uid = row["instance_id"]
-    repo_name = row.get("repo", "")
-    repo_base, repo_name_only = repo_name.lower().split("/")
-    hsh = uid.replace("instance_", "")
-
-    if (
-        uid
-        == "instance_element-hq__element-web-ec0f940ef0e8e3b61078f145f34dc40d1938e6c5-vnan"
-    ):
-        repo_name_only = "element-web"  # Keep full name for this one case
-    elif "element-hq" in repo_name.lower() and "element-web" in repo_name.lower():
-        repo_name_only = "element"
-        if hsh.endswith("-vnan"):
-            hsh = hsh[:-5]
-    # All other repos: strip -vnan suffix
-    elif hsh.endswith("-vnan"):
-        hsh = hsh[:-5]
-
-    tag = f"{repo_base}.{repo_name_only}-{hsh}"
-    if len(tag) > 128:
-        tag = tag[:128]
-    return tag
-
-
-### END copied from sweap
-
-
 def ts():
     return datetime.datetime.now().isoformat()
 
@@ -188,8 +157,23 @@ def snapshot_run_config_files(
 #     return path.read_bytes().decode("utf-8", errors="surrogateescape")
 
 
-sweap_df = pd.read_csv("external_hf_v2.csv", engine="c", on_bad_lines="skip")
-sweap_df = sweap_df.set_index("instance_id", drop=False)
+swebench_df = pd.read_parquet("swebench-pro.parquet")
+_required_swebench_columns = {
+    "instance_id",
+    "repo",
+    "repo_language",
+    "problem_statement",
+    "requirements",
+    "interface",
+    "dockerhub_tag",
+}
+_missing_swebench_columns = sorted(_required_swebench_columns - set(swebench_df.columns))
+if _missing_swebench_columns:
+    raise ValueError(
+        "swebench-pro.parquet is missing required columns: "
+        + ", ".join(_missing_swebench_columns)
+    )
+swebench_df = swebench_df.set_index("instance_id", drop=False)
 
 
 class Instance:
@@ -198,9 +182,9 @@ class Instance:
     def __init__(self, instance_id: str, ident: int):
         self.instance_id: str = instance_id
         self.ident: str = ident  # used as llm key name
-        self.instance: pd.Series = sweap_df.loc[instance_id]
+        self.instance: pd.Series = swebench_df.loc[instance_id]
         self.env_docker_image: str = (
-            f"{self.DOCKER_IMAGE_BASE}:{sweap_get_docker_tag(self.instance)}"
+            f"{self.DOCKER_IMAGE_BASE}:{self.instance['dockerhub_tag']}"
         )
         self.instance_input: dict[str, str] = {
             k: self.instance[k]
@@ -906,7 +890,7 @@ if __name__ == "__main__":
         for p in projects:
             for i in p:
                 images.append(
-                    f"{Instance.DOCKER_IMAGE_BASE}:{sweap_get_docker_tag(sweap_df.loc[i])}"
+                    f"{Instance.DOCKER_IMAGE_BASE}:{swebench_df.loc[i]['dockerhub_tag']}"
                 )
 
         for image in images:

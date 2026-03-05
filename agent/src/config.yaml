@@ -176,7 +176,7 @@ environment:
     TQDM_DISABLE: '1'
 
 model:
-  model_name: "openai/Qwen3-Coder-Next"
+  model_name: "litellm_proxy/Qwen3-Coder-Next"
   model_kwargs:
     drop_params: true
     parallel_tool_calls: true

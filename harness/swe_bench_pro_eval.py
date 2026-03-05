@@ -2,14 +2,14 @@
 The script is used to evaluate the performance of the SWEAP Pro agent with local Docker.
 
 This evaluation script:
-1. Takes a CSV file containing test cases and a JSON file containing patches
+1. Takes a parquet file containing test cases and a JSON file containing patches
 2. Runs each patch in a local Docker environment using Docker Hub images
 3. Executes the tests using local run scripts and collects results
 4. Calculates overall accuracy based on test pass/fail status
 
 Usage:
 python swe_bench_pro_eval.py \
-    --raw_sample_path=data.csv \
+    --raw_sample_path=swebench-pro.parquet \
     --patch_path={OUTPUT}/gold_patches.json \
     --output_dir={OUTPUT}/ \
     --scripts_dir=run_scripts \
@@ -19,8 +19,8 @@ python swe_bench_pro_eval.py \
 It expects:
 - Local run scripts in run_scripts/{instance_id}/run_script.sh
 - Local parser scripts in run_scripts/{instance_id}/parser.py
-- CSV file with columns: instance_id, before_repo_set_cmd, selected_test_files_to_run, 
-  base_commit, base_dockerfile, instance_dockerfile, FAIL_TO_PASS, PASS_TO_PASS
+- A parquet file with columns including: instance_id, repo, dockerhub_tag,
+  before_repo_set_cmd, selected_test_files_to_run, base_commit, fail_to_pass, pass_to_pass
 
 And the generated patch file (gold_patches.json) should have the following format:
 [
@@ -51,28 +51,9 @@ from tqdm import tqdm
 from metrics_aggregator import compute_harness_metrics
 
 
-def get_dockerhub_image_uri(uid, dockerhub_username, repo_name=""):
-    """Fallback helper for harness-local usage when helper_code is unavailable."""
-    repo_base, repo_name_only = repo_name.lower().split("/")
-    hsh = uid.replace("instance_", "")
-
-    if (
-        uid
-        == "instance_element-hq__element-web-ec0f940ef0e8e3b61078f145f34dc40d1938e6c5-vnan"
-    ):
-        repo_name_only = "element-web"  # Keep full name for this one case
-    elif "element-hq" in repo_name.lower() and "element-web" in repo_name.lower():
-        repo_name_only = "element"
-        if hsh.endswith("-vnan"):
-            hsh = hsh[:-5]
-    elif hsh.endswith("-vnan"):
-        hsh = hsh[:-5]
-
-    tag = f"{repo_base}.{repo_name_only}-{hsh}"
-    if len(tag) > 128:
-        tag = tag[:128]
-
-    return f"{dockerhub_username}/sweap-images:{tag}"
+def get_dockerhub_image_uri(dockerhub_tag, dockerhub_username):
+    """Build the Docker Hub image URI from the parquet-provided docker tag."""
+    return f"{dockerhub_username}/sweap-images:{dockerhub_tag}"
 
 
 # Credit: prabhuteja12
@@ -154,40 +135,6 @@ bash /workspace/run_script.sh {selected_test_files_to_run} >> /workspace/stdout.
 python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspace/output.json
 """
     return entry_script
-
-
-def create_dockerhub_tag(uid, repo_name=""):
-    """
-    Convert instance_id and repo name to Docker Hub compatible tag format.
-    This must match the format used in the upload script.
-
-    Args:
-        uid (str): The instance_id (e.g., "django__django-12345")
-        repo_name (str): The repository name from ECR (e.g., "sweap-images/nodebb.nodebb")
-
-    Returns:
-        str: Docker Hub compatible tag (e.g., "nodebb-nodebb-12345")
-    """
-    if repo_name:
-        # For "NodeBB/NodeBB" -> repo_base="nodebb", repo_name="nodebb"
-        # Format: {repo_base}.{repo_name}-{OriginalCase}__{OriginalCase}-{hash}-{version}
-        # Example: nodebb.nodebb-NodeBB__NodeBB-7b8bffd763e2155cf88f3ebc258fa68ebe18188d-vf2cf3cbd463b7ad942381f1c6d077626485a1e9e
-        repo_base, repo_name_only = repo_name.lower().split("/")
-        # Keep original case for the instance_id part (after removing "instance_" prefix)
-        hsh = uid.replace("instance_", "")
-        return f"{repo_base}.{repo_name_only}-{hsh}"
-    else:
-        image_name = "default"
-
-    # Extract the tag part from the instance ID
-    # For UIDs that start with a pattern like "django__django-", extract everything after position 9
-    if "__" in uid and len(uid) > 9:
-        tag_part = uid[9:]  # Skip the first 9 characters (e.g., "django__")
-    else:
-        tag_part = uid
-
-    return f"{image_name}-{tag_part}"
-
 
 def prepare_run(uid, output_dir, prefix, redo):
     uid_dir = os.path.join(output_dir, uid)
@@ -347,7 +294,7 @@ def eval_with_docker(
 
         # Run container via Docker SDK
         dockerhub_image_uri = get_dockerhub_image_uri(
-            uid, dockerhub_username, sample.get("repo", "")
+            sample["dockerhub_tag"], dockerhub_username
         )
         # print(f"Using Docker Hub image: {dockerhub_image_uri}")
 
@@ -422,7 +369,9 @@ def parse_args():
         description="Run SWEAP Pro evaluations using local Docker with Docker Hub images and local scripts"
     )
     parser.add_argument(
-        "--raw_sample_path", required=True, help="Path to the raw sample CSV/JSONL file"
+        "--raw_sample_path",
+        required=True,
+        help="Path to the raw sample parquet file",
     )
 
     patch_input_group = parser.add_mutually_exclusive_group(required=True)
@@ -487,11 +436,23 @@ def compute_accuracy(eval_results):
 
 
 def load_raw_samples(raw_sample_path):
-    if raw_sample_path.endswith(".jsonl"):
-        raw_sample_df = pd.read_json(raw_sample_path, lines=True)
-    else:
-        raw_sample_df = pd.read_csv(raw_sample_path)
-
+    raw_sample_df = pd.read_parquet(raw_sample_path)
+    required_columns = {
+        "instance_id",
+        "repo",
+        "dockerhub_tag",
+        "base_commit",
+        "before_repo_set_cmd",
+        "selected_test_files_to_run",
+        "fail_to_pass",
+        "pass_to_pass",
+    }
+    missing_columns = sorted(required_columns - set(raw_sample_df.columns))
+    if missing_columns:
+        raise ValueError(
+            f"{raw_sample_path} is missing required columns: "
+            + ", ".join(missing_columns)
+        )
     raw_sample_df = raw_sample_df.fillna("")
     return raw_sample_df.set_index("instance_id", drop=False)
 
