@@ -32,7 +32,7 @@ env_file=".example.env"
 if [ -f ".bd.env" ]; then
     env_file=".bd.env"
 fi
-BUILDKIT_PROGRESS=plain docker compose --env-file $env_file up -d --build
+BUILDKIT_PROGRESS=plain docker compose --env-file "$env_file" up -d --build --force-recreate app controller
 
 popd > /dev/null
 

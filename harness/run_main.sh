@@ -19,7 +19,7 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "memcomp-agent" ]]; then
 fi
 
 # ===== Config: edit these values before running =====
-RUN_NAME="agentic-mem-test"
+RUN_NAME="test-dsv32"
 CANDIDATES_FILE="candidates.json"
 PROJECTS_FILE="projects_full.json"
 COLLECT_ONLY=0
