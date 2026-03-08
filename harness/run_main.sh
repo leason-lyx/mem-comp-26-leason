@@ -22,7 +22,7 @@ fi
 RUN_NAME="test-dsv32"
 CANDIDATES_FILE="candidates.json"
 PROJECTS_FILE="projects_full.json"
-COLLECT_ONLY=0
+COLLECT_ONLY="${COLLECT_ONLY:-1}"
 VERBOSE=2
 FILE_OWNER="zzr"
 LITELLM_TRAJ_DIR="../play/trajs"

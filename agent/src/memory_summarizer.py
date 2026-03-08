@@ -6,6 +6,8 @@ from litellm import completion as litellm_completion
 
 from memory_store import DEFAULT_MEMORY_FIELDS
 
+ROLE_BUCKETS = {"system", "user", "assistant", "tool"}
+
 
 class MemorySummarizer:
     def __init__(
@@ -14,16 +16,18 @@ class MemorySummarizer:
         api_base: str,
         api_key: str,
         model_name: str,
-        timeout: int = 45,
+        timeout: int = 300,
         summary_version: str = "v1",
         fields: list[str] | None = None,
         field_descriptions: dict[str, str] | None = None,
+        summary_total_char_limit: int = 136000,
     ):
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.model_name = model_name
         self.timeout = timeout
         self.summary_version = summary_version
+        self.summary_total_char_limit = max(120, int(summary_total_char_limit))
         selected_fields = fields or list(DEFAULT_MEMORY_FIELDS)
         self.fields = tuple(str(field) for field in selected_fields)
         self.field_descriptions = {
@@ -45,6 +49,20 @@ class MemorySummarizer:
         return "\n".join(lines)
 
     @staticmethod
+    def _content_to_str(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if content is None:
+            return ""
+        return json.dumps(content, ensure_ascii=False)
+
+    @staticmethod
+    def _role_bucket(role: str) -> str:
+        if role in ROLE_BUCKETS:
+            return role
+        return "user"
+
+    @staticmethod
     def _truncate_middle(
         text: str,
         *,
@@ -52,13 +70,214 @@ class MemorySummarizer:
         head_len: int,
         tail_len: int,
     ) -> str:
+        if max_len <= 0:
+            return ""
         if len(text) <= max_len:
             return text
-        return (
-            text[:head_len]
-            + f"\n...[{len(text) - head_len - tail_len} chars truncated]...\n"
-            + text[-tail_len:]
+        marker = "\n...[truncated]...\n"
+        if max_len <= len(marker):
+            return text[:max_len]
+
+        keep_len = max_len - len(marker)
+        requested_keep = max(head_len, 0) + max(tail_len, 0)
+        if requested_keep <= 0:
+            head_keep = keep_len // 2
+        else:
+            head_keep = int(keep_len * max(head_len, 0) / requested_keep)
+        tail_keep = keep_len - head_keep
+
+        if tail_keep <= 0:
+            return text[:keep_len] + marker[: max_len - keep_len]
+
+        return text[:head_keep] + marker + text[-tail_keep:]
+
+    def _truncate_for_budget(self, text: str, max_len: int) -> str:
+        return self._truncate_middle(
+            text,
+            max_len=max_len,
+            head_len=(max_len * 3) // 5,
+            tail_len=max_len - ((max_len * 3) // 5),
         )
+
+    @staticmethod
+    def _extract_action_commands(extra: Any) -> list[str]:
+        if not isinstance(extra, dict):
+            return []
+        actions = extra.get("actions", [])
+        if not isinstance(actions, list):
+            return []
+
+        commands: list[str] = []
+        for action in actions:
+            if isinstance(action, dict):
+                commands.append(str(action.get("command", "")))
+            else:
+                commands.append(str(action))
+        return commands
+
+    @staticmethod
+    def _allocate_proportional_caps(lengths: list[int], total_cap: int) -> list[int]:
+        caps = [0] * len(lengths)
+        if total_cap <= 0:
+            return caps
+
+        positive = [(idx, length) for idx, length in enumerate(lengths) if length > 0]
+        if not positive:
+            return caps
+
+        total_len = sum(length for _, length in positive)
+        assigned = 0
+        remainders: list[tuple[float, int]] = []
+        for idx, length in positive:
+            exact = total_cap * length / total_len
+            cap = int(exact)
+            caps[idx] = cap
+            assigned += cap
+            remainders.append((exact - cap, idx))
+
+        remaining = total_cap - assigned
+        for _, idx in sorted(remainders, reverse=True):
+            if remaining <= 0:
+                break
+            caps[idx] += 1
+            remaining -= 1
+
+        return caps
+
+    @staticmethod
+    def _message_text_length(info: dict[str, Any]) -> int:
+        bucket = info["bucket"]
+        if bucket == "assistant":
+            return len(info["content"]) + sum(len(command) for command in info["actions"])
+        if bucket == "tool":
+            return len(info["content"]) + len(info["exception_info"])
+        return len(info["content"])
+
+    def _build_summary_prompts(
+        self,
+        *,
+        task: str,
+        messages: list[dict[str, Any]],
+        exit_status: str,
+    ) -> tuple[str, str]:
+        compact_messages = self._compact_messages(messages)
+        compact_json = json.dumps(compact_messages, ensure_ascii=False)
+
+        field_guidance = self._build_field_guidance()
+        system_prompt = (
+            "You summarize a coding-agent trajectory into a reusable process memory for future guidance. "
+            "Output MUST be strict JSON object with exactly these keys: "
+            + ", ".join(self.fields)
+            + ". Each value must be a concise string. No markdown, no code fences, no extra keys.\n\n"
+            + "Field guidance:\n"
+            + field_guidance
+            + "\n\n"
+            + "Use empty string when a field has no reliable evidence."
+        )
+
+        task_text = self._truncate_for_budget(task.strip(), 6000)
+        user_prompt = (
+            "Task:\n"
+            f"{task_text}\n\n"
+            f"Exit status: {exit_status}\n\n"
+            "Trajectory (compacted JSON):\n"
+            f"{compact_json}\n\n"
+            "Return strict JSON only."
+        )
+        return system_prompt, user_prompt
+
+    def _compact_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        infos: list[dict[str, Any]] = []
+        class_totals: dict[str, int] = {}
+        class_counts: dict[str, int] = {}
+
+        for message in messages:
+            role = str(message.get("role", ""))
+            bucket = self._role_bucket(role)
+            content = self._content_to_str(message.get("content", ""))
+            extra = message.get("extra", {})
+            actions = self._extract_action_commands(extra) if bucket == "assistant" else []
+            exception_info = ""
+            returncode = None
+            if bucket == "tool" and isinstance(extra, dict):
+                returncode = extra.get("returncode")
+                if extra.get("exception_info"):
+                    exception_info = self._content_to_str(extra.get("exception_info"))
+
+            info = {
+                "role": role,
+                "bucket": bucket,
+                "content": content,
+                "actions": actions,
+                "returncode": returncode,
+                "exception_info": exception_info,
+            }
+            info["raw_len"] = self._message_text_length(info)
+            infos.append(info)
+
+            class_totals[bucket] = class_totals.get(bucket, 0) + info["raw_len"]
+            class_counts[bucket] = class_counts.get(bucket, 0) + 1
+
+        total_raw_len = sum(class_totals.values())
+        class_caps: dict[str, int] = {}
+        for bucket, count in class_counts.items():
+            if total_raw_len > 0:
+                class_budget = (
+                    self.summary_total_char_limit
+                    * class_totals.get(bucket, 0)
+                    / total_raw_len
+                )
+            else:
+                class_budget = self.summary_total_char_limit / max(len(class_counts), 1)
+            class_caps[bucket] = max(120, int(class_budget / max(count, 1)))
+
+        compact: list[dict[str, Any]] = []
+        for info in infos:
+            per_message_cap = class_caps.get(info["bucket"], 120)
+            item: dict[str, Any] = {"role": info["role"], "content": ""}
+
+            if info["bucket"] in {"system", "user"}:
+                item["content"] = self._truncate_for_budget(
+                    info["content"], per_message_cap
+                )
+            elif info["bucket"] == "assistant":
+                lengths = [len(info["content"])] + [
+                    len(command) for command in info["actions"]
+                ]
+                caps = self._allocate_proportional_caps(lengths, per_message_cap)
+                content_cap = caps[0] if caps else per_message_cap
+                item["content"] = self._truncate_for_budget(
+                    info["content"], content_cap
+                )
+                if info["actions"]:
+                    item["actions"] = [
+                        self._truncate_for_budget(
+                            command,
+                            caps[idx + 1] if idx + 1 < len(caps) else 0,
+                        )
+                        for idx, command in enumerate(info["actions"])
+                    ]
+            elif info["bucket"] == "tool":
+                lengths = [len(info["content"]), len(info["exception_info"])]
+                caps = self._allocate_proportional_caps(lengths, per_message_cap)
+                content_cap = caps[0] if caps else per_message_cap
+                item["content"] = self._truncate_for_budget(
+                    info["content"], content_cap
+                )
+                item["returncode"] = info["returncode"]
+                if info["exception_info"]:
+                    exception_cap = caps[1] if len(caps) > 1 else 0
+                    item["exception_info"] = self._truncate_for_budget(
+                        info["exception_info"], exception_cap
+                    )
+            else:
+                item["content"] = self._truncate_for_budget(
+                    info["content"], per_message_cap
+                )
+
+            compact.append(item)
+
+        return compact
 
     def _extract_commands(
         self, messages: list[dict[str, Any]], limit: int = 24
@@ -91,49 +310,13 @@ class MemorySummarizer:
                 break
         return paths
 
-    def _compact_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        compact: list[dict[str, Any]] = []
-        for message in messages:
-            role = str(message.get("role", ""))
-            content = message.get("content", "")
-            if not isinstance(content, str):
-                content = json.dumps(content, ensure_ascii=False)
-
-            if role == "tool":
-                content = self._truncate_middle(
-                    content, max_len=2400, head_len=1200, tail_len=1200
-                )
-            else:
-                content = self._truncate_middle(
-                    content, max_len=1200, head_len=800, tail_len=350
-                )
-
-            item: dict[str, Any] = {"role": role, "content": content}
-            extra = message.get("extra", {})
-            if isinstance(extra, dict):
-                if role == "assistant":
-                    actions = extra.get("actions", [])
-                    if isinstance(actions, list) and actions:
-                        item["actions"] = [
-                            str(a.get("command", ""))[:400]
-                            for a in actions
-                            if isinstance(a, dict) and a.get("command")
-                        ][:6]
-                if role == "tool":
-                    item["returncode"] = extra.get("returncode")
-                    if extra.get("exception_info"):
-                        item["exception_info"] = str(extra.get("exception_info"))[:240]
-            compact.append(item)
-
-        return compact
-
     def _normalize_record(self, raw: dict[str, Any]) -> dict[str, str]:
         record: dict[str, str] = {}
         for field in self.fields:
             value = raw.get(field, "")
             if isinstance(value, (dict, list)):
                 value = json.dumps(value, ensure_ascii=False)
-            record[field] = str(value).strip()[:6000]
+            record[field] = str(value).strip()[:10000]
         return record
 
     def _extract_json_from_content(self, content: str) -> dict[str, Any]:
@@ -179,9 +362,7 @@ class MemorySummarizer:
         commands = self._extract_commands(messages)
         commands_text = "\n".join(commands[:24])[:6000]
         path_text = "\n".join(self._extract_paths(commands_text + "\n" + task))
-        task_short = self._truncate_middle(
-            task.strip(), max_len=1200, head_len=800, tail_len=350
-        )
+        task_short = self._truncate_for_budget(task.strip(), 2400)
 
         fallback_values = {
             "issue_description": task_short or "No task description captured.",
@@ -197,7 +378,9 @@ class MemorySummarizer:
         }
         result = {field: fallback_values.get(field, "") for field in self.fields}
         if not any(result.values()):
-            result[self.fields[0]] = task_short or f"Fallback summary used. Reason: {reason}"
+            result[self.fields[0]] = (
+                task_short or f"Fallback summary used. Reason: {reason}"
+            )
         return result
 
     def summarize(
@@ -207,12 +390,6 @@ class MemorySummarizer:
         messages: list[dict[str, Any]],
         exit_status: str,
     ) -> dict[str, str]:
-        compact_messages = self._compact_messages(messages)
-        compact_json = json.dumps(compact_messages, ensure_ascii=False)
-
-        if len(compact_json) > 100000:
-            compact_json = compact_json[-100000:]
-
         if not self.api_base or not self.api_key or not self.model_name:
             return self._fallback_summary(
                 task=task,
@@ -221,26 +398,10 @@ class MemorySummarizer:
                 reason="Missing LLM API configuration",
             )
 
-        field_guidance = self._build_field_guidance()
-        system_prompt = (
-            "You summarize a coding-agent trajectory into a reusable process memory. "
-            "Output MUST be strict JSON object with exactly these keys: "
-            + ", ".join(self.fields)
-            + ". Each value must be a concise string. No markdown, no code fences, no extra keys.\n\n"
-            + "Field guidance:\n"
-            + field_guidance
-            + "\n\n"
-            + "Only write what can be supported by trajectory evidence. "
-            + "Use empty string when a field has no reliable evidence."
-        )
-
-        user_prompt = (
-            "Task:\n"
-            f"{task[:5000]}\n\n"
-            f"Exit status: {exit_status}\n\n"
-            "Trajectory (compacted JSON):\n"
-            f"{compact_json}\n\n"
-            "Return strict JSON only."
+        system_prompt, user_prompt = self._build_summary_prompts(
+            task=task,
+            messages=messages,
+            exit_status=exit_status,
         )
 
         response = litellm_completion(
