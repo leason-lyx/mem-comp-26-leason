@@ -84,6 +84,36 @@ def apply_unique_candidate_run_name_suffix(candidates: list[dict]) -> str:
     return run_suffix
 
 
+def resolve_collect_only_candidate_run_name(base_run_name: str) -> str:
+    """Resolve collect-only candidate run_name to an existing result directory.
+
+    Lookup order:
+    1. Exact match: <RESULT_PATH>/<base_run_name>
+    2. Latest prefixed dir: <RESULT_PATH>/<base_run_name>-*
+    """
+    base_run_name = base_run_name.strip()
+    exact_dir = RESULT_PATH / base_run_name
+    if exact_dir.is_dir():
+        return base_run_name
+
+    prefix = f"{base_run_name}-"
+    matches = [
+        path
+        for path in RESULT_PATH.iterdir()
+        if path.is_dir() and path.name.startswith(prefix)
+    ]
+    if not matches:
+        return base_run_name
+
+    # Prefer the most recently updated run when multiple historical runs exist.
+    best = max(matches, key=lambda p: p.stat().st_mtime)
+    if VERBOSE >= 1:
+        print(
+            f"{ts()} | collect-only run_name resolved: {base_run_name} -> {best.name}"
+        )
+    return best.name
+
+
 def fix_owner_and_mode(path: Path, mode: int | None = None):
     if not path.exists():
         return
@@ -813,42 +843,68 @@ if __name__ == "__main__":
         projects = json.load(f)
     with candidates_file.open() as f:
         candidates = json.load(f)
-    run_suffix = apply_unique_candidate_run_name_suffix(candidates)
+
+    if COLLECT_ONLY:
+        if RESULT_PATH.exists() and RESULT_PATH.is_dir():
+            for idx, candidate in enumerate(candidates):
+                base_name = (
+                    str(candidate.get("run_name", "")).strip() or f"candidate-{idx:02d}"
+                )
+                candidate["run_name"] = resolve_collect_only_candidate_run_name(
+                    base_name
+                )
+        else:
+            # Keep original run_name to produce a clearer not-found message later.
+            for idx, candidate in enumerate(candidates):
+                candidate["run_name"] = (
+                    str(candidate.get("run_name", "")).strip() or f"candidate-{idx:02d}"
+                )
+    else:
+        run_suffix = apply_unique_candidate_run_name_suffix(candidates)
 
     print(
         f"loaded candidates = {len(candidates)} ; instances = {sum(len(p) for p in projects)} = {[len(p) for p in projects]}"
     )
-    print(f"{ts()} | candidate run_name suffix = {run_suffix}")
+    if COLLECT_ONLY:
+        print(f"{ts()} | collect-only mode: reuse existing candidate run_name")
+    else:
+        print(f"{ts()} | candidate run_name suffix = {run_suffix}")
 
-    def san_check():
+    def san_check(allow_cleanup_prompt: bool):
         # check path
 
         assert SSHBOX_SCRIPT_PATH.exists()
         assert LITELLM_TRAJ_PATH.exists()
 
         if RESULT_PATH.exists() and has_existing_results(RESULT_PATH):
-            print(f"- {RESULT_PATH}")
-            while True:
-                ans = (
-                    input(f"result path already exists, overwrite it? [y/n]: ")
-                    .strip()
-                    .lower()
-                )
-                # Keep terminal/log output aligned when stdout is piped through tee.
-                print("", flush=True)
-                if ans in {"y", "yes"}:
+            if not allow_cleanup_prompt:
+                if VERBOSE >= 1:
                     print(
-                        "WARNING: will cleanup existing results in 10 seconds, CTRL+C NOW to abort",
-                        flush=True,
+                        f"{ts()} | collect-only: keep existing result files in {RESULT_PATH}"
                     )
-                    time.sleep(10)
-                    print(f"{ts()} | cleanup old results: {RESULT_PATH}", flush=True)
-                    cleanup_result_path_for_overwrite(RESULT_PATH)
-                    print(f"{ts()} | cleanup finished: {RESULT_PATH}", flush=True)
-                    break
-                if ans in {"n", "no"}:
-                    raise SystemExit("aborted by user")
-                print("invalid input, please enter y or n")
+            else:
+                print(f"- {RESULT_PATH}")
+                while True:
+                    ans = (
+                        input(f"result path already exists, overwrite it? [y/n]: ")
+                        .strip()
+                        .lower()
+                    )
+                    # Keep terminal/log output aligned when stdout is piped through tee.
+                    print("", flush=True)
+                    if ans in {"y", "yes"}:
+                        print(
+                            "WARNING: will cleanup existing results in 10 seconds, CTRL+C NOW to abort",
+                            flush=True,
+                        )
+                        time.sleep(10)
+                        print(f"{ts()} | cleanup old results: {RESULT_PATH}", flush=True)
+                        cleanup_result_path_for_overwrite(RESULT_PATH)
+                        print(f"{ts()} | cleanup finished: {RESULT_PATH}", flush=True)
+                        break
+                    if ans in {"n", "no"}:
+                        raise SystemExit("aborted by user")
+                    print("invalid input, please enter y or n")
 
         RESULT_PATH.mkdir(parents=True, exist_ok=True)
         WORK_PATH.mkdir(parents=True, exist_ok=True)
@@ -900,7 +956,8 @@ if __name__ == "__main__":
                 pull_image_with_fallback(image)
 
     if COLLECT_ONLY:
-        if not RESULT_PATH.exists():
+        san_check(allow_cleanup_prompt=False)
+        if not RESULT_PATH.exists() or not has_existing_results(RESULT_PATH):
             raise FileNotFoundError(
                 f"result path not found for collect-only mode: {RESULT_PATH}"
             )
@@ -911,7 +968,7 @@ if __name__ == "__main__":
             collect_candidate_results(projects, Candidate(**c))
         print(f"{ts()} | done collect-only")
     else:
-        san_check()
+        san_check(allow_cleanup_prompt=True)
         snapshot_run_config_files(RESULT_PATH, projects_file, candidates_file)
         print(f"{ts()} | sanity check passed")
 

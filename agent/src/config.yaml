@@ -107,30 +107,63 @@ agent:
 memory:
   # Full field set written into memory.db.
   fields:
+    # issue information
     - issue_description
-    - keywords
+    - issue_type
+    - tags
+    - outcome
+    # factual memory
+    - repository_context
+    - problem_signature
+    - relevant_artifacts
+    - evidence
     - root_cause
-    - decisions
-    - insights
-    - related_paths
-    - commands
-    - notes
+    - codebase_constraints
+    - fix_anchor
+    - verification
+    # experiential_memory
+    - perspective
+    - localization_strategy
+    - modification_strategy
+    - decision_rationale
+    - reusable_procedure
+    - pitfalls
+    - failure_reflection
+    - transfer_rule
+
+  # Approximate total char budget for memory summary trajectory input.
+  summary_total_char_limit: 136000
+
   # Optional per-field guidance for memory summarization LLM.
   # Keys not present in `fields` are ignored.
   field_descriptions:
     issue_description: "Problem statement with symptoms, trigger conditions, and expected behavior."
-    keywords: "Short retrieval-oriented keywords or phrases, separated by commas."
-    root_cause: "Most likely root cause; if uncertain, record validated clues only."
-    decisions: "Key implementation decisions and tradeoffs with rationale."
-    insights: "Reusable lessons, pitfalls, and effective debugging paths."
-    related_paths: "Relevant file or directory paths, prioritizing real edited paths."
-    commands: "Important shell commands for investigation, edits, and verification."
-    notes: "Extra context such as constraints, risks, and suggested follow-ups."
+    issue_type: "A generalized category of the problem, such as parameter-handling bug, state-mutation bug, API misuse, test-environment failure, or localization error."
+    tags: "Short retrieval-oriented keywords or phrases, separated by commas."
+    outcome: "Whether the underlying experience was successful, failed, or mixed."
+
+    repository_context: "Stable repository knowledge relevant to future tasks, such as architecture conventions, important subsystems, common APIs, recurring test setup requirements, or known module responsibilities."
+    problem_signature: "Generalized description of the observed symptom, trigger condition, and expected behavior, written to match similar future issues."
+    relevant_artifacts: "Important files, directories, classes, functions, configs, tests, or commands that were actually relevant to understanding or fixing the issue."
+    evidence: "Concrete validated clues that support diagnosis, such as failing tests, stack traces, behavioral observations, code patterns, or contradictory hypotheses that were ruled out."
+    root_cause: "The most likely root cause in concise and factual terms; if uncertain, store only validated causal evidence."
+    codebase_constraints: "Project-specific constraints, invariants, compatibility requirements, interface contracts, or side-effect risks that must be respected."
+    fix_anchor: "The key code location or design responsibility where the fix should conceptually land, even if the final patch touched multiple places."
+    verification: "How correctness was checked, including reproduction tests, regression tests, environment setup, and any remaining uncertainty."
+
+    perspective: "Abstract understanding of the problem that led, or should have led, to the right solution; focus on how to think about this kind of issue, not on specific identifiers."
+    localization_strategy: "General strategy for narrowing the search space, including where to start, what signals to prioritize, and what misleading paths to avoid."
+    modification_strategy: "Reusable repair pattern or design principle that explains how this class of issue should usually be fixed."
+    decision_rationale: "Why the chosen repair direction was preferred over alternatives, including important tradeoffs such as safety, scope, backward compatibility, and maintainability."
+    reusable_procedure: "A compact, replayable procedure or mini-demonstration for similar future tasks, such as inspect X, verify Y, patch Z, then run W."
+    pitfalls: "Common mistakes, misleading symptoms, or anti-patterns that can waste time or produce brittle fixes."
+    failure_reflection: "What a failed or partially failed attempt teaches: misunderstanding of the issue, wrong localization, unsafe edit pattern, or insufficient validation."
+    transfer_rule: "A brief statement of when this experience should be reused, including the conditions under which it is likely applicable or not applicable."
 
 compression:
-  mode: "obsmasking"
+  mode: "off"
   compressor_model_name: null
-  timeout_s: 45
+  timeout_s: 300
   summary:
     context_char_threshold: 100000
     keep_recent_steps: 20
@@ -180,17 +213,17 @@ compression:
     n_ctx_before: 2
     n_ctx_after: 1
     show_ctx: true
-    step_char_threshold: 10000
-    min_char_reduction: 5000
+    step_char_threshold: 3000
+    min_char_reduction: 1000
   obsmasking:
-    min_age_steps: 8
-    observation_char_threshold: 10000
+    min_age_steps: 10
+    observation_char_threshold: 5000
     max_masks_per_query: 4
     placeholder_template: "Tool call result is ommitted."
 
 environment:
   cwd: "/app"
-  timeout: 180
+  timeout: 300
   env:
     PAGER: cat
     MANPAGER: cat
@@ -203,6 +236,7 @@ model:
   model_kwargs:
     drop_params: true
     parallel_tool_calls: true
+    timeout: 300
   observation_template: |
     {% if output.exception_info -%}
     <exception>{{output.exception_info}}</exception>

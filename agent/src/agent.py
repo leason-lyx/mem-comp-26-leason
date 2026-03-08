@@ -22,6 +22,7 @@ from memory_summarizer import MemorySummarizer
 class MemoryFieldConfig(BaseModel):
     fields: list[str] = Field(default_factory=lambda: list(DEFAULT_MEMORY_FIELDS))
     field_descriptions: dict[str, str] | None = None
+    summary_total_char_limit: int = 136000
 
 
 class MemoryAgentConfig(AgentConfig):
@@ -76,6 +77,7 @@ class MemoryAgent:
             model_name=str(getattr(model_config, "model_name", "")),
             fields=list(self.memory_fields),
             field_descriptions=self.field_descriptions,
+            summary_total_char_limit=memory_cfg.summary_total_char_limit,
         )
         compression_cfg = getattr(self.config, "compression", CompressionConfig())
         if not isinstance(compression_cfg, CompressionConfig):
@@ -109,7 +111,7 @@ class MemoryAgent:
                 f"fields={json.dumps(sorted(self.field_descriptions.keys()), ensure_ascii=False)}"
             )
 
-        self.initial_top_k = 25
+        self.initial_top_k = 15
         # Runtime memory injection is currently disabled.
         # self.runtime_cooldown_steps = 6
         # self.max_runtime_injections = 3
