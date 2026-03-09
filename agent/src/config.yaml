@@ -113,14 +113,14 @@ memory:
     - tags
     - outcome
     # factual memory
-    - repository_context
-    - problem_signature
-    - relevant_artifacts
-    - evidence
-    - root_cause
-    - codebase_constraints
-    - fix_anchor
-    - verification
+    # - repository_context
+    # - problem_signature
+    # - relevant_artifacts
+    # - evidence
+    # - root_cause
+    # - codebase_constraints
+    # - fix_anchor
+    # - verification
     # experiential_memory
     - perspective
     - localization_strategy

@@ -41,14 +41,13 @@ import platform as py_platform
 import re
 import time
 
-try:
-    import docker  # Optional: used for local Docker execution
-except Exception:
-    docker = None
+import docker  # Optional: used for local Docker execution
 import pandas as pd
 from tqdm import tqdm
 
 from metrics_aggregator import compute_harness_metrics
+
+ROOTFS_DEVICE = os.getenv('ROOTFS_DEVICE', '/dev/sda')
 
 
 def get_dockerhub_image_uri(dockerhub_tag, dockerhub_username):
@@ -126,7 +125,7 @@ cd /app
 git reset --hard {base_commit}
 git checkout {base_commit}
 echo "=== git apply start ===" >> /workspace/stdout.log
-git apply -v /workspace/patch.diff >> /workspace/stdout.log 2>> /workspace/stderr.log
+git apply -v --ignore-space-change --ignore-whitespace --reject /workspace/patch.diff >> /workspace/stdout.log 2>> /workspace/stderr.log
 echo "=== git apply end (exit code: $?) ===" >> /workspace/stdout.log
 {before_repo_set_cmd}
 # run test and save stdout and stderr to separate files
@@ -159,6 +158,8 @@ def assemble_workspace_files(uid, scripts_dir, patch, sample):
     parser_script = load_local_script(scripts_dir, uid, "parser.py")
     entryscript_content = create_entryscript(sample)
     cleaned_patch = strip_binary_hunks(patch)
+    if not cleaned_patch.endswith("\n"):
+        cleaned_patch += "\n"
     if cleaned_patch != patch:
         print(f"Stripped binary diff hunks from patch for {uid}")
 
@@ -321,6 +322,16 @@ def eval_with_docker(
             "remove": True,
             "entrypoint": "/bin/bash",  # Override image entrypoint
             "command": ["-c", "bash /workspace/entryscript.sh"],
+            "cpu_period": 100000,
+            "cpu_quota": 100000 * 6,
+            "mem_limit": '12g',
+            "memswap_limit": '12g',
+            "device_read_bps": [{"Path": ROOTFS_DEVICE, "Rate": 30*1024*1024}],
+            "device_write_bps": [{"Path": ROOTFS_DEVICE, "Rate": 30*1024*1024}],
+            "device_read_iops": [{"Path": ROOTFS_DEVICE, "Rate": 2000}],
+            "device_write_iops": [{"Path": ROOTFS_DEVICE, "Rate": 2000}],
+            "blkio_weight": 300,
+            "pids_limit": 32768,
         }
         if block_network:
             run_kwargs["network_mode"] = "none"

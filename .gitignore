@@ -21,3 +21,5 @@ mini-swe-agent/
 /harness/results/
 /temp/
 harness/result_statistics.ipynb
+.vscode/
+.vscode/settings.json
