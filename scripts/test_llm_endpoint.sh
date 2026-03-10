@@ -7,9 +7,9 @@ BASE_URL=${QWEN_BASE_URL:-"http://100.124.83.129:46400/v1"}
 API_KEY=${QWEN_API_KEY:-"api_key"}
 MODEL=${QWEN_MODEL:-"Qwen3-Coder-Next"}
 
-# BASE_URL=${QWEN_BASE_URL:-"https://api2.aigcbest.top/v1"}
-# API_KEY=${QWEN_API_KEY:-"sk-ormlBzyQ1Pg8SO1aretuHMrIRgVWDKZGEP08nTv6hQgDptqO"}
-# MODEL=${QWEN_MODEL:-"DeepSeek-V3.2"}
+BASE_URL=${QWEN_BASE_URL:-"https://api.deepseek.com"}
+API_KEY=${QWEN_API_KEY:-"sk-9926cbaed4664f43be23befb17a11a9f"}
+MODEL=${QWEN_MODEL:-"deepseek-chat"}
 
 echo "POST ${BASE_URL}/chat/completions with model=${MODEL}"
 

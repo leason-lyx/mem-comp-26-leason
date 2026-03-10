@@ -79,9 +79,9 @@ model_list:
 
   - model_name: deepseek-v3.2
     litellm_params:
-      model: openai/DeepSeek-V3.2
-      api_base: https://api2.aigcbest.top/v1
-      api_key: sk-ormlBzyQ1Pg8SO1aretuHMrIRgVWDKZGEP08nTv6hQgDptqO
+      model: openai/deepseek-chat
+      api_base: https://api.deepseek.com
+      api_key: sk-9926cbaed4664f43be23befb17a11a9f
     model_info:
       "cache_creation_input_token_cost": 0
       "input_cost_per_token_cache_hit": 2.8e-08
