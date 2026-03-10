@@ -79,8 +79,8 @@ model_list:
 
   - model_name: deepseek-v3.2
     litellm_params:
-      model: openai/DeepSeek-V3.2
-      api_base: https://api2.aigcbest.top/v1
+      model: openai/deepseek-chat
+      api_base: https://api.deepseek.com
       api_key: REMOVED_CREDENTIAL
     model_info:
       "cache_creation_input_token_cost": 0
