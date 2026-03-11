@@ -48,6 +48,9 @@ LINKOS_MIRROR_MAP = {
 }
 
 ROOTFS_DEVICE = os.getenv("ROOTFS_DEVICE", "/dev/sda")
+DOCKER_API_TIMEOUT = int(
+    os.getenv("DOCKER_API_TIMEOUT", os.getenv("EVAL_DOCKER_API_TIMEOUT", "600"))
+)
 DOCKER_LIMITS = {
     "cpu_period": 100000,
     "cpu_quota": 100000 * 6,
@@ -278,7 +281,7 @@ class Workdir:
         self.cleanup()
 
 
-docker_client = docker.from_env()
+docker_client = docker.from_env(timeout=DOCKER_API_TIMEOUT)
 
 
 def _split_registry(image: str) -> tuple[str | None, str]:

@@ -45,7 +45,7 @@ import docker  # Optional: used for local Docker execution
 import pandas as pd
 from tqdm import tqdm
 
-from metrics_aggregator import compute_harness_metrics
+from metrics_aggregator import compute_metrics_bundle
 
 ROOTFS_DEVICE = os.getenv('ROOTFS_DEVICE', '/dev/sda')
 
@@ -685,7 +685,7 @@ def main():
                 f"[{agent_name}] accuracy={run_result['accuracy']:.2%} "
                 f"({passed}/{total_evald})"
             )
-            harness_metrics = compute_harness_metrics(
+            harness_metrics, instance_metrics = compute_metrics_bundle(
                 run_output_dir, run_result["eval_results"]
             )
 
@@ -699,6 +699,7 @@ def main():
                 "passed_instances": passed,
                 "missing_instances": run_result["missing_instances"],
                 "harness_metrics": harness_metrics,
+                "instance_metrics": instance_metrics,
                 "instance_results": run_result["eval_results"],
             }
 
