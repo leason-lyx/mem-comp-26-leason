@@ -3,7 +3,7 @@ import argparse
 import json
 from pathlib import Path
 
-from metrics_aggregator import compute_harness_metrics
+from metrics_aggregator import compute_metrics_bundle
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,7 +38,9 @@ def validate_agent_entry(agent_name: str, payload: object) -> tuple[str, dict[st
 
 
 def reorder_payload_with_metrics(
-    payload: dict[str, object], harness_metrics: dict[str, int | float]
+    payload: dict[str, object],
+    harness_metrics: dict[str, int | float],
+    instance_metrics: dict[str, dict[str, int | float | bool]],
 ) -> dict[str, object]:
     reordered: dict[str, object] = {}
     inserted = False
@@ -46,13 +48,17 @@ def reorder_payload_with_metrics(
     for key, value in payload.items():
         if key == "harness_metrics":
             continue
+        if key == "instance_metrics":
+            continue
         if key == "instance_results" and not inserted:
             reordered["harness_metrics"] = harness_metrics
+            reordered["instance_metrics"] = instance_metrics
             inserted = True
         reordered[key] = value
 
     if not inserted:
         reordered["harness_metrics"] = harness_metrics
+        reordered["instance_metrics"] = instance_metrics
 
     return reordered
 
@@ -74,15 +80,17 @@ def main() -> None:
     updated = 0
     for agent_name, payload in eval_results.items():
         output_dir, instance_results = validate_agent_entry(agent_name, payload)
-        harness_metrics = compute_harness_metrics(output_dir, instance_results)
-        eval_results[agent_name] = reorder_payload_with_metrics(payload, harness_metrics)
+        harness_metrics, instance_metrics = compute_metrics_bundle(output_dir, instance_results)
+        eval_results[agent_name] = reorder_payload_with_metrics(
+            payload, harness_metrics, instance_metrics
+        )
         updated += 1
 
     with eval_results_path.open("w") as f:
         json.dump(eval_results, f, indent=2)
         f.write("\n")
 
-    print(f"Updated harness_metrics for {updated} agent entries")
+    print(f"Updated harness_metrics and instance_metrics for {updated} agent entries")
     print(f"Wrote: {eval_results_path}")
 
 
