@@ -1,5 +1,5 @@
 import argparse
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict,field
 import pandas as pd
 from pathlib import Path
 import shutil
@@ -239,6 +239,7 @@ class Candidate:
     llm_quota_instance: float
     enable_memory: bool
     timeout_s: float
+    env: dict[str, str] = field(default_factory=dict)
 
 
 class Workdir:
@@ -458,6 +459,11 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
         ssh_password = secrets.token_hex(10)
         sshbox_name = f"memcomp-{candidate.run_name}-{instance.ident}-sshbox"
         remove_container_if_exists(sshbox_name)
+
+        limit = {**DOCKER_LIMITS}
+        for env_k, env_v in candidate.env.items():
+            limit['environment'].append(f'{env_k}={env_v}')
+
         cont = docker_client.containers.create(
             instance.env_docker_image,
             [ssh_password],
@@ -473,7 +479,7 @@ def eval_single_project(instances: list[Instance], candidate: Candidate):
                 },
                 str(pcap_path.resolve()): {"bind": "/mnt/pcap", "mode": "rw"},
             },
-            **DOCKER_LIMITS,
+            **limit,
         )
         docker_client.networks.get("internet").connect(cont)
 

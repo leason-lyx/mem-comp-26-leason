@@ -6,7 +6,7 @@ services:
     agent:
         restart: no
         build: .
-        image: minisweagent-external-mem-dsv32 # the agent will be built with this image name
+        image: minisweagent-external-mem # the agent will be built with this image name
         networks:
             - infra
         environment:

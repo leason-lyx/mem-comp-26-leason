@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 
 import yaml
 from minisweagent.models.litellm_model import LitellmModel
@@ -32,12 +33,14 @@ def main():
         task += f'\n\nNew interfaces introduced:\n{instance["interface"]}'
     task += f'\n\nThe {instance["repo_language"]} project "{instance["repo"]}" has been cloned to {config["environment"]["cwd"]}'
 
-    print("mini-swe-agent v2 started!")
+    print("agent started!")
+    model_name = os.environ.get('MODEL_NAME', config['model']['model_name'])
+    print(f"using model: {model_name}")
 
     agent = MemoryAgent(
         args.memory_path,
         LitellmModel(
-            model_name=config["model"]["model_name"],
+            model_name=model_name,
             model_kwargs={
                 "api_base": args.llm_base_url,
                 "api_key": args.llm_api_key,
