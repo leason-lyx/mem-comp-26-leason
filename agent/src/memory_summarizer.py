@@ -16,7 +16,7 @@ class MemorySummarizer:
         api_base: str,
         api_key: str,
         model_name: str,
-        timeout: int = 300,
+        timeout: int = 600,
         summary_version: str = "v1",
         fields: list[str] | None = None,
         field_descriptions: dict[str, str] | None = None,

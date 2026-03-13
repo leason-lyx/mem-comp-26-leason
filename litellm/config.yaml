@@ -60,8 +60,9 @@ model_list:
   - model_name: glm-4.7
     litellm_params:
       model: openai/glm-4.7
-      api_base: https://api2.aigcbest.top/v1
-      api_key: sk-ormlBzyQ1Pg8SO1aretuHMrIRgVWDKZGEP08nTv6hQgDptqO
+      api_base: https://open.bigmodel.cn/api/paas/v4
+      api_key: 0ea4eef1f02a4237b8b229a2a5047c10.kRaM2hOjfFaq3pqa
+      max_parallel_requests: 2 
     model_info:
       "cache_creation_input_token_cost": 0
       "cache_read_input_token_cost": 1.1e-07
@@ -105,7 +106,7 @@ general_settings:
 
 litellm_settings:
   num_retries: 1
-  request_timeout: 240
+  request_timeout: 600
   set_verbose: false
   callbacks: # should mount into /app
     - traj_logger.traj_logger_instance
