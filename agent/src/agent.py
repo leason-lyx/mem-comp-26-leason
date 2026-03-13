@@ -111,7 +111,7 @@ class MemoryAgent:
                 f"fields={json.dumps(sorted(self.field_descriptions.keys()), ensure_ascii=False)}"
             )
 
-        self.initial_top_k = 15
+        self.initial_top_k = 10
         # Runtime memory injection is currently disabled.
         # self.runtime_cooldown_steps = 6
         # self.max_runtime_injections = 3
