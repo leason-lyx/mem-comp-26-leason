@@ -4,13 +4,17 @@ import datetime as dt
 import json
 import os
 import re
-import sqlite3
 import textwrap
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 import requests
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
 
 
 FACT_FIELDS = [
@@ -68,14 +72,12 @@ MEMORY_INTERACTIONS = {
 }
 OVERALL_HELPFULNESS = {"high", "medium", "low", "none", "unclear"}
 SUMMARY_PROMPT_PREFIX = "You summarize a coding-agent trajectory"
-INJECTED_MEMORY_MARKER = "External memory retrieved"
-MAX_EVIDENCE_ITEMS = 40
-MAX_EVIDENCE_CHARS = 20_000
 MAX_INSTANCE_EVIDENCE = 5
 REQUEST_TIMEOUT = 180
 DEFAULT_BASE_URL = os.getenv("QWEN_BASE_URL", "http://100.124.83.129:46400/v1")
 DEFAULT_API_KEY = os.getenv("QWEN_API_KEY", "api_key")
 DEFAULT_MODEL = os.getenv("QWEN_MODEL", "Qwen3-Coder-Next")
+SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 def parse_args() -> argparse.Namespace:
@@ -86,13 +88,13 @@ def parse_args() -> argparse.Namespace:
         "--run-dir",
         type=Path,
         required=True,
-        help="Path to an external-mem-* run directory.",
+        help="Path to a run directory containing pXXiYY instances, or a wrapper directory that contains one.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Defaults to analysis/out/<run-dir-name>.",
+        help="Defaults to analysis/out/<parent-run-dir>/<run-dir-name>.",
     )
     parser.add_argument(
         "--model",
@@ -203,16 +205,47 @@ def validate_cli_args(args: argparse.Namespace) -> None:
         raise ValueError("--limit must be >= 1")
 
 
+def is_valid_instance_dir(path: Path) -> bool:
+    return (
+        path.is_dir()
+        and re.fullmatch(r"p\d{2}i\d{2}", path.name) is not None
+        and (path / "instance.json").exists()
+        and (path / "_harness" / "agent.log").exists()
+    )
+
+
+def derive_run_label(run_dir: Path) -> Path:
+    if run_dir.parent.name:
+        return Path(run_dir.parent.name) / run_dir.name
+    return Path(run_dir.name)
+
+
 def list_instance_dirs(run_dir: Path) -> list[Path]:
-    instance_dirs = []
+    direct_instance_dirs = [
+        child for child in sorted(run_dir.iterdir()) if is_valid_instance_dir(child)
+    ]
+    if direct_instance_dirs:
+        return direct_instance_dirs
+
+    nested_instance_dirs = []
     for child in sorted(run_dir.iterdir()):
         if not child.is_dir():
             continue
-        if not re.fullmatch(r"p\d{2}i\d{2}", child.name):
-            continue
-        if (child / "instance.json").exists() and (child / "_harness" / "agent.log").exists():
-            instance_dirs.append(child)
-    return instance_dirs
+        nested_instance_dirs.extend(
+            grandchild
+            for grandchild in sorted(child.iterdir())
+            if is_valid_instance_dir(grandchild)
+        )
+
+    duplicate_names = [
+        name for name, count in Counter(path.name for path in nested_instance_dirs).items() if count > 1
+    ]
+    if duplicate_names:
+        raise RuntimeError(
+            "found duplicate instance directory names under nested run dirs: "
+            + ", ".join(sorted(duplicate_names))
+        )
+    return nested_instance_dirs
 
 
 def is_summary_traj(messages: list[dict[str, Any]]) -> bool:
@@ -316,21 +349,6 @@ def parse_agent_log(agent_log_path: Path) -> dict[str, Any]:
     }
 
 
-def load_memories(memory_db_path: Path) -> dict[int, dict[str, Any]]:
-    if not memory_db_path.exists():
-        return {}
-    conn = sqlite3.connect(memory_db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute("select * from memories order by id").fetchall()
-    finally:
-        conn.close()
-    result = {}
-    for row in rows:
-        result[int(row["id"])] = {key: row[key] for key in row.keys()}
-    return result
-
-
 def get_task_title(problem_statement: str) -> str:
     for line in problem_statement.splitlines():
         stripped = line.strip()
@@ -339,53 +357,6 @@ def get_task_title(problem_statement: str) -> str:
         if stripped:
             return stripped
     return ""
-
-
-def parse_artifact_list(value: str) -> list[str]:
-    value = (value or "").strip()
-    if not value:
-        return []
-    loaded = safe_json_loads(value)
-    if isinstance(loaded, list):
-        return [str(item) for item in loaded if str(item).strip()]
-    if "," in value:
-        return [item.strip() for item in value.split(",") if item.strip()]
-    return [value]
-
-
-def extract_fix_anchor_paths(value: str) -> list[str]:
-    if not value:
-        return []
-    matches = re.findall(r"[\w./-]+\.[A-Za-z0-9_]+", value)
-    return list(dict.fromkeys(matches))
-
-
-def collect_keyword_terms(injected_memories: list[dict[str, Any]]) -> list[str]:
-    terms: list[str] = []
-    for memory in injected_memories:
-        for artifact in parse_artifact_list(str(memory.get("relevant_artifacts", ""))):
-            terms.append(artifact)
-            terms.append(Path(artifact).name)
-        for anchor in extract_fix_anchor_paths(str(memory.get("fix_anchor", ""))):
-            terms.append(anchor)
-            terms.append(Path(anchor).name)
-        tags = str(memory.get("tags", ""))
-        for tag in tags.split(","):
-            tag = tag.strip()
-            if len(tag) >= 3:
-                terms.append(tag)
-        issue_type = str(memory.get("issue_type", "")).strip()
-        if issue_type:
-            terms.append(issue_type)
-    deduped = []
-    seen = set()
-    for term in terms:
-        key = term.lower()
-        if key in seen or len(key) < 3:
-            continue
-        seen.add(key)
-        deduped.append(term)
-    return deduped
 
 
 def flatten_message_content(content: Any) -> str:
@@ -406,135 +377,57 @@ def flatten_message_content(content: Any) -> str:
     return str(content)
 
 
-def add_candidate(
-    candidate_map: dict[int, dict[str, Any]],
+def extract_injected_memories_from_messages(
     messages: list[dict[str, Any]],
-    idx: int,
-    priority: int,
-    source_type: str,
-    reason: str,
-) -> None:
-    if idx < 0 or idx >= len(messages):
-        return
-    message = messages[idx]
-    content = flatten_message_content(message.get("content"))
-    snippet = truncate_text(content, 1200)
-    if not snippet:
-        return
-    current = candidate_map.get(idx)
-    if current is None:
-        candidate_map[idx] = {
-            "message_index": idx,
-            "role": message.get("role", "unknown"),
-            "source_type": source_type,
-            "priority": priority,
-            "reasons": [reason],
-            "snippet": snippet,
-        }
-        return
-    previous_priority = current["priority"]
-    current["priority"] = max(current["priority"], priority)
-    if reason not in current["reasons"]:
-        current["reasons"].append(reason)
-    if source_type != current["source_type"] and priority > previous_priority:
-        current["source_type"] = source_type
-
-
-def extract_evidence_bundle(
-    messages: list[dict[str, Any]], injected_memories: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    candidate_map: dict[int, dict[str, Any]] = {}
-    injection_indexes = []
-    keywords = [term.lower() for term in collect_keyword_terms(injected_memories)]
-
-    for idx, message in enumerate(messages):
-        content = flatten_message_content(message.get("content"))
-        lowered = content.lower()
-        if INJECTED_MEMORY_MARKER.lower() in lowered:
-            injection_indexes.append(idx)
-            add_candidate(
-                candidate_map,
-                messages,
-                idx,
-                100,
-                "memory_reference",
-                "显式注入 memory 文本",
-            )
-        if "memory" in lowered and message.get("role") in {"user", "assistant"}:
-            add_candidate(
-                candidate_map,
-                messages,
-                idx,
-                95,
-                "memory_reference",
-                "显式提到 memory",
-            )
-
-    if injection_indexes:
-        first_injection = injection_indexes[0]
-        for idx in range(first_injection + 1, min(len(messages), first_injection + 7)):
-            add_candidate(
-                candidate_map,
-                messages,
-                idx,
-                92,
-                "post_injection",
-                "注入后前 6 条消息",
-            )
-
-    for idx, message in enumerate(messages):
-        content = flatten_message_content(message.get("content"))
-        lowered = content.lower()
-        if keywords and any(term in lowered for term in keywords):
-            for neighbor in (idx - 1, idx, idx + 1):
-                add_candidate(
-                    candidate_map,
-                    messages,
-                    neighbor,
-                    85,
-                    "command_context",
-                    "命中文件/标签/锚点关键词",
-                )
-
-    tail_start = max(0, len(messages) - 8)
-    for idx in range(tail_start, len(messages)):
-        message = messages[idx]
-        content = flatten_message_content(message.get("content"))
-        lowered = content.lower()
-        priority = 70
-        if "git diff" in lowered or "complete_task_and_submit_final_output" in lowered:
-            priority = 80
-        if "verify" in lowered or "validation" in lowered or "py_compile" in lowered:
-            priority = 82
-        add_candidate(
-            candidate_map,
-            messages,
-            idx,
-            priority,
-            "final_verification",
-            "收尾验证/提交阶段",
-        )
-
-    prioritized = sorted(
-        candidate_map.values(),
-        key=lambda item: (-item["priority"], item["message_index"]),
+    pattern = re.compile(
+        r"\[Memory #(?P<ordinal>\d+)\s*\|\s*id=(?P<id>\d+)\]\s*"
+        r"(?P<body>.*?)(?=\n\[Memory #\d+\s*\|\s*id=\d+\]|\Z)",
+        re.S,
     )
+    extracted: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
 
-    selected: list[dict[str, Any]] = []
-    used_chars = 0
-    for item in prioritized:
-        snippet_len = len(item["snippet"])
-        if len(selected) >= MAX_EVIDENCE_ITEMS:
-            break
-        if selected and used_chars + snippet_len > MAX_EVIDENCE_CHARS:
+    for message in messages:
+        content = flatten_message_content(message.get("content"))
+        if not content or "[Memory #" not in content:
             continue
-        selected.append(item)
-        used_chars += snippet_len
+        for match in pattern.finditer(content):
+            memory_id = int(match.group("id"))
+            if memory_id in seen_ids:
+                continue
+            body = match.group("body").strip()
+            memory: dict[str, Any] = {"id": memory_id}
+            current_field: str | None = None
+            for raw_line in body.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("- ") and ":" in line[2:]:
+                    key, value = line[2:].split(":", 1)
+                    current_field = key.strip()
+                    memory[current_field] = value.strip()
+                    continue
+                if current_field is not None:
+                    memory[current_field] = (
+                        f"{memory.get(current_field, '')} {line}".strip()
+                    )
+            seen_ids.add(memory_id)
+            extracted.append(memory)
+    return extracted
 
-    selected.sort(key=lambda item: item["message_index"])
-    for item in selected:
-        item["reason"] = "；".join(item.pop("reasons"))
-    return selected
+
+def serialize_full_trajectory(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    serialized = []
+    for idx, message in enumerate(messages):
+        serialized.append(
+            {
+                "message_index": idx,
+                "role": message.get("role", "unknown"),
+                "content": flatten_message_content(message.get("content")),
+            }
+        )
+    return serialized
 
 
 def availability_for_group(run_mode: str, group: str) -> bool:
@@ -576,24 +469,13 @@ def build_instance_context(instance_dir: Path, run_mode: str) -> dict[str, Any]:
         raise FileNotFoundError(f"no non-summary trajectory found in {instance_dir}")
     history_traj = read_json(history_traj_path)
     history_messages = history_traj.get("messages") or []
-    memories = load_memories(harness_dir / "memory" / "memory.db")
-
-    injected_ids = []
-    for event in agent_log["injected_events"]:
-        injected_ids.extend(event["ids"])
-    injected_ids = list(dict.fromkeys(injected_ids))
+    injected_memories = extract_injected_memories_from_messages(history_messages)
+    injected_ids = [
+        int(memory["id"])
+        for memory in injected_memories
+        if isinstance(memory.get("id"), int)
+    ]
     saved_ids = [item["id"] for item in agent_log["saved_memories"]]
-
-    injected_memories = []
-    missing_memory_ids = []
-    for memory_id in injected_ids:
-        memory = memories.get(memory_id)
-        if memory is None:
-            missing_memory_ids.append(memory_id)
-            continue
-        injected_memories.append(memory)
-
-    evidence_bundle = extract_evidence_bundle(history_messages, injected_memories)
     task_title = get_task_title(str(instance.get("problem_statement", "")))
 
     return {
@@ -611,8 +493,7 @@ def build_instance_context(instance_dir: Path, run_mode: str) -> dict[str, Any]:
         "injected_events": agent_log["injected_events"],
         "injected_memory_ids": injected_ids,
         "saved_memory_ids": saved_ids,
-        "missing_memory_ids": missing_memory_ids,
-        "memories_by_id": memories,
+        "missing_memory_ids": [],
         "injected_memories": injected_memories,
         "injected_memory_summaries": [
             summarize_memory(memory, run_mode) for memory in injected_memories
@@ -621,7 +502,7 @@ def build_instance_context(instance_dir: Path, run_mode: str) -> dict[str, Any]:
         "summary_traj_path": str(summary_traj_path) if summary_traj_path else None,
         "history_message_count": len(history_messages),
         "summary_traj_exists": summary_traj_path is not None,
-        "evidence_bundle": evidence_bundle,
+        "full_trajectory": serialize_full_trajectory(history_messages),
     }
 
 
@@ -652,7 +533,7 @@ def build_prompt(context: dict[str, Any]) -> list[dict[str, str]]:
                     "memory_field": FACT_FIELDS,
                     "memory_content": "string",
                     "step": 123,
-                    "source_type": "memory_reference|command_context|post_injection|final_verification",
+                    "source_type": "full_trajectory",
                     "helping_mode": sorted(USAGE_MODES),
                     "agent_action_zh": "string",
                     "snippet": "string",
@@ -671,7 +552,7 @@ def build_prompt(context: dict[str, Any]) -> list[dict[str, str]]:
                     "memory_field": EXPERIENCE_FIELDS,
                     "memory_content": "string",
                     "step": 123,
-                    "source_type": "memory_reference|command_context|post_injection|final_verification",
+                    "source_type": "full_trajectory",
                     "helping_mode": sorted(USAGE_MODES),
                     "agent_action_zh": "string",
                     "snippet": "string",
@@ -707,18 +588,18 @@ def build_prompt(context: dict[str, Any]) -> list[dict[str, str]]:
             "requirements_excerpt": truncate_text(context["requirements"], 1200),
         },
         "injected_memories": context["injected_memory_summaries"],
-        "evidence_bundle": context["evidence_bundle"],
+        "full_trajectory": context["full_trajectory"],
         "output_schema": schema,
         "rules": [
             "输出必须是严格 JSON，对象顶层不能有额外文字。",
-            "证据必须只引用 evidence_bundle 里的片段，不要杜撰。",
+            "证据必须只引用 full_trajectory 里的片段，不要杜撰。",
             "如果某类记忆在该 run 中不可用，则对应 contribution.label 必须是 not_available，used_fields 与 evidence 为空数组。",
             "不要写泛泛而谈的帮助描述。只有当你能明确指出“哪段 memory 内容，在哪一步，通过什么方式影响了 agent”时，才能判定 helpful 或 partially_helpful。",
             "如果拿不出上述具体案例，就返回 not_used；只有轨迹证据本身严重不足时才用 insufficient_evidence。",
             "used_fields 只能填写对应字段组内的字段名。",
             "usage_modes 只能从给定枚举中选择。",
             "每条 evidence 都必须填写 memory_field、memory_content、step、helping_mode、agent_action_zh、snippet、why_zh。",
-            "step 必须使用 evidence_bundle 里的 message_index。",
+            "step 必须使用 full_trajectory 里的 message_index。",
             "evidence 最多 5 条，每条 snippet 要短，why_zh 要明确解释其如何支持判断。",
         ],
     }
@@ -778,6 +659,19 @@ class OpenAICompatibleClient:
         )
         response.raise_for_status()
         return parse_response_content(response.json())
+
+
+def create_progress_bar(total: int) -> Any:
+    if tqdm is None:
+        return None
+    return tqdm(total=total, desc="analyze_traj", unit="instance")
+
+
+def log_progress_status(progress: Any, message: str) -> None:
+    if progress is not None and tqdm is not None:
+        tqdm.write(message)
+        return
+    print(message)
 
 
 def normalize_evidence_items(items: Any, allowed_fields: list[str]) -> list[dict[str, Any]]:
@@ -1230,8 +1124,9 @@ def aggregate_results(
     def counter_to_dict(counter: Counter) -> dict[str, int]:
         return {key: counter[key] for key in sorted(counter)}
 
+    run_label = derive_run_label(run_dir)
     summary = {
-        "run_name": run_dir.name,
+        "run_name": run_label.as_posix(),
         "run_dir": str(run_dir),
         "run_mode": run_mode,
         "model": model,
@@ -1324,7 +1219,7 @@ def analyze_instance(
             "startup_fields": [],
             "saved_memory_ids": [],
             "missing_memory_ids": [],
-            "evidence_bundle": [],
+            "full_trajectory": [],
         }
         analysis = make_stub_analysis(fallback_context, str(exc))
         raw_response = ""
@@ -1350,7 +1245,7 @@ def analyze_instance(
         "repo": context["repo"],
         "task_title": context["task_title"],
         "injected_memories": context["injected_memory_summaries"],
-        "evidence_bundle": context["evidence_bundle"],
+        "full_trajectory": context["full_trajectory"],
     }
 
     write_json(paths["instance_json"], result_payload)
@@ -1378,7 +1273,7 @@ def main() -> None:
     args = parse_args()
     validate_cli_args(args)
 
-    output_dir = args.output_dir or (Path("analysis") / "out" / args.run_dir.name)
+    output_dir = args.output_dir or (SCRIPT_DIR / "out" / derive_run_label(args.run_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     instance_dirs = list_instance_dirs(args.run_dir)
@@ -1393,26 +1288,37 @@ def main() -> None:
     )
 
     worker = lambda path: analyze_instance(path, args, output_dir)
-    if args.workers == 1:
-        for instance_dir in instance_dirs:
-            result = worker(instance_dir)
-            print(
-                f"[analyze_traj] {result['instance_name']} "
-                f"{'skipped' if result.get('skipped') else 'done'}"
-            )
-    else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = {
-                executor.submit(worker, instance_dir): instance_dir.name
-                for instance_dir in instance_dirs
-            }
-            for future in concurrent.futures.as_completed(futures):
-                instance_name = futures[future]
-                result = future.result()
-                print(
-                    f"[analyze_traj] {instance_name} "
-                    f"{'skipped' if result.get('skipped') else 'done'}"
+    progress = create_progress_bar(len(instance_dirs))
+    try:
+        if args.workers == 1:
+            for instance_dir in instance_dirs:
+                result = worker(instance_dir)
+                log_progress_status(
+                    progress,
+                    f"[analyze_traj] {result['instance_name']} "
+                    f"{'skipped' if result.get('skipped') else 'done'}",
                 )
+                if progress is not None:
+                    progress.update(1)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+                futures = {
+                    executor.submit(worker, instance_dir): instance_dir.name
+                    for instance_dir in instance_dirs
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    instance_name = futures[future]
+                    result = future.result()
+                    log_progress_status(
+                        progress,
+                        f"[analyze_traj] {instance_name} "
+                        f"{'skipped' if result.get('skipped') else 'done'}",
+                    )
+                    if progress is not None:
+                        progress.update(1)
+    finally:
+        if progress is not None:
+            progress.close()
 
     finished_results = load_finished_results(output_dir)
     summary = aggregate_results(

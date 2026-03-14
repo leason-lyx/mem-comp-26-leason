@@ -105,6 +105,12 @@ agent:
   cost_limit: 0
 
 memory:
+  # Initial memory retrieval mode:
+  # - semantic: existing FTS5 + overlap reranking based on the task text.
+  # - latest: inject the newest inserted memories directly, ignoring the task text.
+  retrieval_mode: semantic
+  top_k: 10
+
   # Full field set written into memory.db.
   fields:
     # issue information
@@ -232,7 +238,7 @@ environment:
     TQDM_DISABLE: '1'
 
 model:
-  model_name: "litellm_proxy/Qwen3-Coder-Next"
+  model_name: "litellm_proxy/gpt-5.2"
   # model_name: "litellm_proxy/deepseek-v3.2"
   model_kwargs:
     drop_params: true
