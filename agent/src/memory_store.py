@@ -26,7 +26,7 @@ def _tokenize(text: str) -> list[str]:
     seen: set[str] = set()
     tokens: list[str] = []
     for token in re.findall(r"[a-z0-9_]+", text.lower()):
-        if len(token) < 2:
+        if len(token) < 4 or len(token) > 50:
             continue
         if token in seen:
             continue
@@ -205,7 +205,7 @@ class MemoryStore:
         tokens = _tokenize(query_text)
         if not tokens:
             return []
-        limited_tokens = tokens[:16]
+        limited_tokens = tokens[:32]
         match_expr = " OR ".join(f'"{token}"' for token in limited_tokens)
         query_token_set = set(limited_tokens)
 
@@ -240,6 +240,14 @@ class MemoryStore:
             )
         )
         return enriched[:top_k]
+
+    def get_latest(self, *, top_k: int = 5) -> list[dict[str, Any]]:
+        if top_k <= 0:
+            return []
+        stmt = select(self.memories).order_by(self.memories.c.id.desc()).limit(top_k)
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [dict(r) for r in rows]
 
     def get_by_ids(self, ids: list[int]) -> list[dict[str, Any]]:
         if not ids:

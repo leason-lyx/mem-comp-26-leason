@@ -5,6 +5,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from typing import Literal
 
 from jinja2 import StrictUndefined, Template
 from pydantic import BaseModel, Field
@@ -21,6 +22,8 @@ from memory_summarizer import MemorySummarizer
 
 class MemoryFieldConfig(BaseModel):
     fields: list[str] = Field(default_factory=lambda: list(DEFAULT_MEMORY_FIELDS))
+    retrieval_mode: Literal["semantic", "latest"] = "semantic"
+    top_k: int = Field(default=10, ge=1)
     field_descriptions: dict[str, str] | None = None
     summary_total_char_limit: int = 136000
 
@@ -103,7 +106,9 @@ class MemoryAgent:
         )
         print(
             "[memory] startup "
-            f"fields={json.dumps(list(self.memory_fields), ensure_ascii=False)}"
+            f"fields={json.dumps(list(self.memory_fields), ensure_ascii=False)} "
+            f"retrieval_mode={memory_cfg.retrieval_mode} "
+            f"top_k={memory_cfg.top_k}"
         )
         if self.field_descriptions:
             print(
@@ -111,7 +116,8 @@ class MemoryAgent:
                 f"fields={json.dumps(sorted(self.field_descriptions.keys()), ensure_ascii=False)}"
             )
 
-        self.initial_top_k = 10
+        self.initial_retrieval_mode = memory_cfg.retrieval_mode
+        self.initial_memory_top_k = memory_cfg.top_k
         # Runtime memory injection is currently disabled.
         # self.runtime_cooldown_steps = 6
         # self.max_runtime_injections = 3
@@ -193,10 +199,6 @@ class MemoryAgent:
 
     def _build_initial_query_text(self, task: str) -> str:
         parts = [task.strip()]
-        if len(self.messages) > 1:
-            content = self.messages[1].get("content", "")
-            if isinstance(content, str):
-                parts.append(content[:4000])
         return "\n".join(p for p in parts if p).strip()
 
     def _build_runtime_query_text(self) -> str:
@@ -270,14 +272,17 @@ class MemoryAgent:
             return
         self._initial_memory_loaded = True
 
-        query_text = self._build_initial_query_text(self.current_task_text)
-        if not query_text:
-            return
-        records = self.memory_store.search(
-            query_text,
-            top_k=self.initial_top_k,
-            candidate_k=self.initial_top_k * 4,
-        )
+        if self.initial_retrieval_mode == "latest":
+            records = self.memory_store.get_latest(top_k=self.initial_memory_top_k)
+        else:
+            query_text = self._build_initial_query_text(self.current_task_text)
+            if not query_text:
+                return
+            records = self.memory_store.search(
+                query_text,
+                top_k=self.initial_memory_top_k,
+                candidate_k=self.initial_memory_top_k * 4,
+            )
         if not records:
             return
 
