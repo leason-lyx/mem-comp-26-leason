@@ -5,6 +5,11 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+if [ ! -f "litellm/.bd.env" ]; then
+  echo "Copy litellm/.example.env to litellm/.bd.env and set your credentials first." >&2
+  exit 1
+fi
+
 echo === configuring docker network
 
 docker network create --internal infra
@@ -28,11 +33,7 @@ echo === starting llm service
 
 pushd litellm > /dev/null
 
-env_file=".example.env"
-if [ -f ".bd.env" ]; then
-    env_file=".bd.env"
-fi
-BUILDKIT_PROGRESS=plain docker compose --env-file $env_file up -d --build
+BUILDKIT_PROGRESS=plain docker compose --env-file .bd.env up -d --build
 
 popd > /dev/null
 
