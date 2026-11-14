@@ -3,7 +3,7 @@ model_list:
     litellm_params:
       model: openai/glm-4.7
       api_base: https://...
-      api_key: sk-...
+      api_key: os.environ/LLM_API_KEY
     model_info: # https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
       "cache_creation_input_token_cost": 0
       "cache_read_input_token_cost": 1.1e-07

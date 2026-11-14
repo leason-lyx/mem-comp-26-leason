@@ -4,12 +4,9 @@ set -euo pipefail
 # Quick health check llm endpoint + tool/parallel_tool_calls capability probe.
 
 BASE_URL=${QWEN_BASE_URL:-"http://100.124.83.129:46400/v1"}
-API_KEY=${QWEN_API_KEY:-"api_key"}
+API_KEY=${QWEN_API_KEY:?Set QWEN_API_KEY before running this script}
 MODEL=${QWEN_MODEL:-"Qwen3-Coder-Next"}
 
-# BASE_URL=${QWEN_BASE_URL:-"https://api.deepseek.com"}
-# API_KEY=${QWEN_API_KEY:-"REMOVED_CREDENTIAL"}
-# MODEL=${QWEN_MODEL:-"deepseek-chat"}
 
 echo "POST ${BASE_URL}/chat/completions with model=${MODEL}"
 

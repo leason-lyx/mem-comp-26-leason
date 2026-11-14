@@ -9,7 +9,14 @@ __pycache__/
 /play/instance/*
 !/play/instance/instance.json
 
-# /litellm/.*.env
+# Local credentials and NFS temporary files
+.env
+.env.*
+.*.env
+*.env
+.nfs*
+!.env.example
+!*.example.env
 !/litellm/.example.env
 # /litellm/config_*.yaml
 !/litellm/config_example.yaml

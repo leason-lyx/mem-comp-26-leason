@@ -5,6 +5,11 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+if [ ! -f "litellm/.bd.env" ]; then
+  echo "Copy litellm/.example.env to litellm/.bd.env and set your credentials first." >&2
+  exit 1
+fi
+
 echo === configuring docker network
 
 docker network create --internal infra

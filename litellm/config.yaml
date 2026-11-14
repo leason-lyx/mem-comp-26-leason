@@ -3,7 +3,7 @@ model_list:
     litellm_params:
       model: openai/Qwen3-Coder-Next
       api_base: http://100.124.83.129:46400/v1
-      api_key: sk-...
+      api_key: os.environ/QWEN_API_KEY
     model_info: # https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
       "cache_creation_input_token_cost": 0
       "cache_read_input_token_cost": 1.1e-07
@@ -21,7 +21,7 @@ model_list:
     litellm_params:
       model: openai/GLM-4.7-Flash
       api_base: http://100.124.83.129:46401/v1
-      api_key: sk-...
+      api_key: os.environ/QWEN_API_KEY
     model_info: # https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
       "cache_creation_input_token_cost": 0
       "cache_read_input_token_cost": 1.1e-07
@@ -39,7 +39,7 @@ model_list:
     litellm_params:
       model: openai/gpt-5.2
       api_base: https://api2.aigcbest.top/v1
-      api_key: REMOVED_CREDENTIAL
+      api_key: os.environ/AIGCBEST_API_KEY
     model_info:
       "cache_creation_input_token_cost": 0
       "cache_read_input_token_cost": 1.75e-07
@@ -59,7 +59,7 @@ model_list:
     litellm_params:
       model: openai/gemini-2.5-pro
       api_base: https://api2.aigcbest.top/v1
-      api_key: REMOVED_CREDENTIAL
+      api_key: os.environ/AIGCBEST_API_KEY
     model_info:
       "cache_creation_input_token_cost": 0
       "cache_read_input_token_cost": 1.25e-07
@@ -79,7 +79,7 @@ model_list:
     litellm_params:
       model: openai/glm-4.7
       api_base: https://open.bigmodel.cn/api/paas/v4
-      api_key: REMOVED_CREDENTIAL
+      api_key: os.environ/BIGMODEL_API_KEY
       max_parallel_requests: 2 
     model_info:
       "cache_creation_input_token_cost": 0
@@ -100,7 +100,7 @@ model_list:
     litellm_params:
       model: openai/deepseek-chat
       api_base: https://api.deepseek.com
-      api_key: REMOVED_CREDENTIAL
+      api_key: os.environ/DEEPSEEK_API_KEY
     model_info:
       "cache_creation_input_token_cost": 0
       "cache_read_input_token_cost": 2.8e-08

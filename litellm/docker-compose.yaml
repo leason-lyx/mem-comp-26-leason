@@ -13,6 +13,8 @@ services:
             db:
                 condition: service_started
                 restart: true
+        env_file:
+            - .bd.env
         environment:
             - TZ=Asia/Shanghai
             - LITELLM_LOCAL_MODEL_COST_MAP=True
