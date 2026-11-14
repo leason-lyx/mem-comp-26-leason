@@ -22,7 +22,7 @@ services:
             - --llm-base-url
             - http://litellm_app:4000
             - --llm-api-key
-            - REMOVED_CREDENTIAL
+            - "${LITELLM_TEST_KEY:?Set LITELLM_TEST_KEY in agent/.env}"
             - --env-ssh
             - root:ssh_Passw0rd@sshbox
 
