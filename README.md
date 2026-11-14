@@ -43,13 +43,14 @@ To set up the evaluation harness and test your agent with the default task (`ins
 1. Clone this repository:
    - Run `git clone https://github.com/mem-comp/mem-comp-26 && cd mem-comp-26`
 2. Configure and start the LLM service:
+   - Copy `litellm/.example.env` to `litellm/.bd.env`, run `chmod 600 litellm/.bd.env`, and set `DB_PASSWORD`, `LITELLM_MASTER_KEY`, and the provider key. Use a generated password and a generated master key with the `sk-` prefix.
    - Edit `litellm/config_example.yaml` to add the LLM your agent will use ([docs](https://docs.litellm.ai/docs/providers/))
    - Run `sudo ./init.sh` to start the LLM service in background and create a test key
 3. Configure your agent (using the provided mini-swe-agent as an example):
-   - Edit `agent_example/docker-compose.yaml` to fill in your test key after `--llm-api-key`
-   - Edit `agent_example/src/config.yaml` to fill in the model name (as configured in LiteLLM) after `model_name:`
+   - Copy `agent/.env.example` to `agent/.env`, run `chmod 600 agent/.env`, and set `LITELLM_TEST_KEY` to the key returned by the controller
+   - Edit `agent/src/config.yaml` to fill in the model name (as configured in LiteLLM) after `model_name:`
 4. Start evaluation:
-   - Run `docker compose up --build` in the `agent_example` directory to start your agent
+   - Run `docker compose up --build` in the `agent` directory to start your agent
    - The patch and logs will be stored in the `play` directory
    - If you want to judge the correctness of the patch, refer to [SWE-Bench-Pro](https://github.com/scaleapi/SWE-bench_Pro-os)
 
@@ -58,10 +59,10 @@ To test with another task manually, you can:
 1. Update the task input:
    - Edit `play/instance/instance.json` to change the task description
    - Delete other files in the `play/instance` directory
-   - In `agent_example/docker-compose.yaml`, edit the `image` of `sshbox` to the new instance
+   - In `agent/docker-compose.yaml`, edit the `image` of `sshbox` to the new instance
 2. Reset LLM quota:
    - Run `curl http://127.0.0.1:4001/test_key/reset` to get a new key with quota reset
-   - Update the `--llm-api-key` in `agent_example/docker-compose.yaml` to the new key
+   - Update `LITELLM_TEST_KEY` in `agent/.env` to the new key
 3. Start evaluation
 
 ### Automated Evaluation
@@ -73,3 +74,19 @@ To run an automated batch evaluation, you can use our harness script:
 3. Run `cd harness; python3 -m pip install -r requirements.txt`
 4. Run `sudo -E python3 main.py` in the `harness` directory to start the evaluation
 5. The results will be stored in the `results` directory
+
+### Credentials
+
+Store provider keys in `litellm/.bd.env`. LiteLLM reads them through
+`os.environ/VARIABLE_NAME` in its model configuration. Set `LLM_API_KEY` for
+`config_example.yaml`. For `config.yaml`, set the variables referenced by the
+models you use, and set `CONFIG_FN=config.yaml` in `litellm/.bd.env`.
+The Compose service loads this file into its environment.
+
+For `scripts/test_llm_endpoint.sh`, export `QWEN_API_KEY` before running the
+script. `QWEN_BASE_URL` and `QWEN_MODEL` select the endpoint and model. For an
+endpoint that accepts any nonempty key, explicitly set a dummy value.
+
+Keep real credentials in the ignored local environment files. Commit only
+templates with empty values. Revoke or rotate any credential that was exposed
+in a commit, including credentials removed from Git history.
